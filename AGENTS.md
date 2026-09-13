@@ -33,23 +33,12 @@ This is a Go project template with two entry points:
 
 ### Key Packages
 
-- **server/** - HTTP server with chi router, includes `/livez`, `/readyz`, `/drain`, `/undrain` endpoints, metrics middleware, and optional pprof
-- **metrics/** - VictoriaMetrics-based Prometheus metrics with HTTP middleware
+- **server/** - Composition root: builds the chi router, applies global middleware (logging, recovery, metrics), and registers route modules; owns the two `http.Server` instances and graceful shutdown. Each route module exposes `RegisterRoutes(chi.Router)`.
+- **api/** - Route module owning the `/api` endpoint
+- **healthcheck/** - Route module owning `/livez`, `/readyz`, `/drain`, `/undrain` and the readiness state behind them
+- **metrics/** - VictoriaMetrics-based Prometheus metrics with HTTP middleware and the `/metrics` route module
 - **common/** - Shared utilities including structured logging setup (slog-based via httplog)
 
 ### HTTP Server Pattern
 
 The server runs two HTTP servers: main API (default :8080) and metrics (default :8090). Supports graceful shutdown with configurable drain duration for load balancer compatibility.
-
-## Implementation Workflow
-
-IMPORTANT: When asked to implement something, always follow through completely:
-1. Create a feature branch
-- based on the latest `main` branch
-- use descriptive branch names like `claude/issue-123-add-feature`
-2. Make the code changes
-3. Commit the changes
-4. Push the branch
-5. Create the PR with `gh pr create --title "..." --body "..."` and reference the issue number in the PR description (e.g., "Closes #123")
-
-Do NOT stop at providing links — complete the entire workflow automatically.

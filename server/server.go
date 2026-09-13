@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"time"
 
-	victoriaMetrics "github.com/VictoriaMetrics/metrics"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httplog/v2"
-	"go.uber.org/atomic"
+	"jokertc/api"
+	"jokertc/healthcheck"
 	"jokertc/metrics"
 )
 
@@ -27,9 +27,9 @@ type HTTPServerConfig struct {
 }
 
 type Server struct {
-	cfg     *HTTPServerConfig
-	isReady atomic.Bool
-	log     *httplog.Logger
+	cfg         *HTTPServerConfig
+	healthcheck *healthcheck.Healthcheck
+	log         *httplog.Logger
 
 	srv        *http.Server
 	metricsSrv *http.Server
@@ -37,15 +37,16 @@ type Server struct {
 
 func New(cfg *HTTPServerConfig) (srv *Server, err error) {
 	srv = &Server{
-		cfg: cfg,
-		log: cfg.Log,
-		srv: nil,
+		cfg:         cfg,
+		log:         cfg.Log,
+		healthcheck: healthcheck.New(&healthcheck.Opts{Log: cfg.Log, DrainDuration: cfg.DrainDuration}),
+		srv:         nil,
 	}
 
 	if cfg.MetricsAddr != "" {
 		srv.metricsSrv = &http.Server{
 			Addr:         cfg.MetricsAddr,
-			Handler:      srv.getMetricsRouter(),
+			Handler:      metrics.Routes(),
 			ReadTimeout:  cfg.ReadTimeout,
 			WriteTimeout: cfg.WriteTimeout,
 		}
@@ -58,8 +59,6 @@ func New(cfg *HTTPServerConfig) (srv *Server, err error) {
 		WriteTimeout: cfg.WriteTimeout,
 	}
 
-	srv.isReady.Swap(true)
-
 	return srv, nil
 }
 
@@ -70,24 +69,13 @@ func (srv *Server) getRouter() http.Handler {
 	mux.Use(middleware.Recoverer)
 	mux.Use(metrics.Middleware)
 
-	mux.Get("/api", srv.handleAPI) // Never serve at `/` (root) path
-	mux.Get("/livez", srv.handleLivenessCheck)
-	mux.Get("/readyz", srv.handleReadinessCheck)
-	mux.Get("/drain", srv.handleDrain)
-	mux.Get("/undrain", srv.handleUndrain)
+	api.RegisterRoutes(mux)
+	srv.healthcheck.RegisterRoutes(mux)
 
 	if srv.cfg.EnablePprof {
 		srv.log.Info("pprof API enabled")
 		mux.Mount("/debug", middleware.Profiler())
 	}
-	return mux
-}
-
-func (srv *Server) getMetricsRouter() http.Handler {
-	mux := chi.NewRouter()
-	mux.Get("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		victoriaMetrics.WritePrometheus(w, true)
-	})
 	return mux
 }
 
