@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>jokertc WebRTC manual test</title>
+<style>
+  body { font-family: sans-serif; margin: 1rem; max-width: 900px; }
+  video { width: 420px; background: #222; margin: 2px; }
+  textarea { width: 100%; height: 4rem; font-size: 0.75rem; }
+  #messages { height: 6rem; }
+  fieldset { margin: 0.5rem 0; }
+</style>
+</head>
+<body>
+<h1>WebRTC manual test</h1>
+<p>Open this page in two tabs. Tab A: Create offer, copy it into Tab B.
+Tab B: paste into Remote description, Accept — copy the produced answer back
+into Tab A and Accept there. Relay candidates in the ICE log prove the TURN
+path. Each round builds a fresh connection, so repeat rounds are reliable.</p>
+
+<video id="localVideo" autoplay muted playsinline></video>
+<video id="remoteVideo" autoplay playsinline></video>
+
+<fieldset>
+  <legend>STUN/TURN server</legend>
+  <label>STUN/TURN host (default: this page's host)</label>
+  <input id="iceHost" type="text">
+</fieldset>
+
+<fieldset>
+  <legend>Signaling (copy / paste)</legend>
+  <button id="createOffer">Create offer</button>
+  <button id="accept">Accept pasted description</button>
+  <label>Local description (copy this into the other tab)</label>
+  <textarea id="localDesc" readonly></textarea>
+  <label>Remote description (paste the other tab's description here)</label>
+  <textarea id="remoteDesc"></textarea>
+</fieldset>
+
+<fieldset>
+  <legend>Data channel</legend>
+  <button id="ping" disabled>Ping</button>
+  <textarea id="messages" readonly placeholder="received messages appear here"></textarea>
+</fieldset>
+
+<script>
+function iceServers() {
+  // 0.0.0.0 is not routable as an ICE server target — normalize to loopback.
+  const host = $('iceHost').value.trim() || '127.0.0.1';
+  return [
+    { urls: `stun:${host}:3478` },
+    { urls: `turn:${host}:3478`, username: 'test', credential: 'test' },
+  ];
+}
+
+const $ = (id) => document.getElementById(id);
+$('iceHost').value = location.hostname === '0.0.0.0' || !location.hostname
+  ? '127.0.0.1'
+  : location.hostname;
+function logIce(line) {
+  console.log('[webrtc-test] ' + line);
+}
+
+let pc = null;
+let sendChannel = null;
+let localStream = null;
+let candCounts = {};
+
+function wireChannel(ch) {
+  sendChannel = ch;
+  ch.onopen = () => { $('ping').disabled = false; };
+  ch.onmessage = (e) => { $('messages').value += 'received ' + e.data + '\n'; };
+}
+
+// buildPC constructs a fresh RTCPeerConnection. Every "Create offer" click
+// starts from a brand-new connection, so rounds never inherit stuck
+// signaling or ICE state.
+function buildPC() {
+  if (pc) {
+    try { pc.close(); } catch (err) { console.error('[webrtc-test] pc.close() failed:', err); }
+  }
+  pc = new RTCPeerConnection({ iceServers: iceServers() });
+  sendChannel = null;
+  candCounts = { host: 0, srflx: 0, relay: 0, prflx: 0, unknown: 0, tcp: 0 };
+  $('ping').disabled = true;
+  $('remoteVideo').srcObject = null;
+  $('messages').value = '';
+
+  candCounts = { host: 0, srflx: 0, relay: 0, prflx: 0, unknown: 0, tcp: 0 };
+  pc.onicecandidate = (e) => {
+    if (!e.candidate) { logIce('gathering done'); return; }
+    const c = e.candidate.candidate;
+    const typ = (c.match(/typ (host|srflx|relay|prflx)/) || [])[1] || 'unknown';
+    const proto = c.split(' ')[2];
+    candCounts[typ] = (candCounts[typ] || 0) + 1;
+    if (proto === 'tcp') candCounts.tcp = (candCounts.tcp || 0) + 1;
+    logIce(c);
+  };
+  pc.oniceconnectionstatechange = () => logIce('ICE state: ' + pc.iceConnectionState);
+  pc.ontrack = (e) => { $('remoteVideo').srcObject = e.streams[0]; };
+  pc.ondatachannel = (e) => wireChannel(e.channel);
+
+  if (localStream) {
+    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+  }
+}
+
+function gatherComplete() {
+  if (pc.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise((res) => {
+    const check = () => {
+      if (pc.iceGatheringState !== 'complete') return;
+      pc.removeEventListener('icegatheringstatechange', check);
+      clearTimeout(t);
+      res();
+    };
+    pc.addEventListener('icegatheringstatechange', check);
+    // Never hang the page on gathering: proceed after 5s regardless.
+    const t = setTimeout(() => {
+      pc.removeEventListener('icegatheringstatechange', check);
+      logIce('gathering timeout after 5s (state: ' + pc.iceGatheringState + ') — proceeding anyway');
+      res();
+    }, 5000);
+  });
+}
+
+if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+  navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then((stream) => {
+    localStream = stream;
+    $('localVideo').srcObject = stream;
+    logIce('local media added');
+  }).catch((err) => { console.error('[webrtc-test] getUserMedia error:', err); logIce('getUserMedia error: ' + err); });
+} else {
+  logIce('camera API unavailable on insecure origin (plain http + non-localhost).');
+  logIce('webcam needs: open http://localhost:8080/ui/manual on this machine, or serve over HTTPS.');
+  logIce('STUN/TURN + data channel tests still work without camera.');
+}
+
+// copyDesc puts the description in the local textarea; the user copies it
+// manually into the other tab.
+function copyDesc(desc) {
+  $('localDesc').value = JSON.stringify(desc);
+  logIce(desc.type + ' ready — candidates: ' + JSON.stringify(candCounts) +
+    ' — copy the textarea into the other tab');
+}
+
+$('createOffer').onclick = async () => {
+  try {
+    logIce('create offer clicked');
+    buildPC();
+    wireChannel(pc.createDataChannel('ping'));
+    logIce('pc built, creating offer (gathering: ' + pc.iceGatheringState + ')');
+    const offer = await pc.createOffer();
+    logIce('offer created, applying local description');
+    await pc.setLocalDescription(offer);
+    logIce('local description set, gathering (state: ' + pc.iceGatheringState + ')');
+    await gatherComplete();
+    logIce('gathering done, writing offer to textbox');
+    copyDesc(pc.localDescription);
+  } catch (err) {
+    console.error('[webrtc-test] createOffer error:', err);
+    logIce('createOffer error: ' + err);
+  }
+};
+
+$('accept').onclick = async () => {
+  try {
+    const text = $('remoteDesc').value;
+    if (!text.trim()) {
+      logIce('nothing to accept — remote description textarea is empty');
+      return;
+    }
+    const desc = JSON.parse(text);
+    if (desc.type === 'offer' && (!pc || pc.localDescription)) {
+      // A pasted offer always starts a fresh round, even if this tab
+      // already had an earlier connection.
+      buildPC();
+    }
+    await pc.setRemoteDescription(desc);
+    logIce('applied remote ' + desc.type);
+    if (desc.type === 'offer') {
+      await pc.setLocalDescription(await pc.createAnswer());
+      logIce('answer applied, gathering (state: ' + pc.iceGatheringState + ')');
+      await gatherComplete();
+      copyDesc(pc.localDescription); // the answer, ready for the other tab
+    }
+  } catch (err) {
+    console.error('[webrtc-test] accept error:', err);
+    logIce('accept error: ' + err);
+  }
+};
+
+$('ping').onclick = () => {
+  const msg = 'ping ' + new Date().toISOString();
+  try {
+    sendChannel.send(msg);
+    $('messages').value += 'sent ' + msg + '\n';
+  } catch (err) {
+    console.error('[webrtc-test] data channel send failed:', err);
+    logIce('data channel send failed: ' + err);
+  }
+};
+
+buildPC();
+
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('[webrtc-test] unhandled promise rejection:', e.reason);
+});
+window.addEventListener('error', (e) => {
+  console.error('[webrtc-test] global error:', e.message);
+});
+</script>
+</body>
+</html>

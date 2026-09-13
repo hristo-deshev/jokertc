@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	"uuid"
@@ -12,6 +15,7 @@ import (
 
 	"jokertc/common"
 	"jokertc/server"
+	"jokertc/turn"
 )
 
 var flags []cli.Flag = []cli.Flag{
@@ -55,6 +59,40 @@ var flags []cli.Flag = []cli.Flag{
 		Value: 45,
 		Usage: "seconds to wait in drain HTTP request",
 	},
+	&cli.StringFlag{
+		Name:  "turn-listen-addr",
+		Value: ":3478",
+		Usage: "STUN/TURN listen address (UDP and TCP); empty disables TURN",
+	},
+	&cli.StringFlag{
+		Name:  "turn-external-ip",
+		Value: "",
+		Usage: "external IP advertised in TURN relayed addresses; auto-detected when empty",
+	},
+	&cli.StringFlag{
+		Name:  "turn-relay-port-range",
+		Value: "50000-50100",
+		Usage: "UDP port range for TURN relay allocations (min-max)",
+	},
+}
+
+func parsePortRange(s string) (min, max int, err error) {
+	parts := strings.SplitN(s, "-", 2)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("invalid port range %q: want min-max", s)
+	}
+	min, err = strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid port range %q: %w", s, err)
+	}
+	max, err = strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid port range %q: %w", s, err)
+	}
+	if min <= 0 || max < min || max > 65535 {
+		return 0, 0, fmt.Errorf("invalid port range %d-%d", min, max)
+	}
+	return min, max, nil
 }
 
 func main() {
@@ -73,6 +111,9 @@ func main() {
 			logService := cCtx.String("log-service")
 			enablePprof := cCtx.Bool("pprof")
 			drainDuration := time.Duration(cCtx.Int64("drain-seconds")) * time.Second
+			turnListenAddr := cCtx.String("turn-listen-addr")
+			turnExternalIP := cCtx.String("turn-external-ip")
+			turnRelayRange := cCtx.String("turn-relay-port-range")
 
 			uid := ""
 			if logUID {
@@ -99,6 +140,25 @@ func main() {
 				WriteTimeout:             30 * time.Second,
 			}
 
+			relayMin, relayMax, err := parsePortRange(turnRelayRange)
+			if err != nil {
+				return err
+			}
+			if turnListenAddr != "" {
+				turnCfg := &turn.Config{
+					ListenUDPAddr: turnListenAddr,
+					ListenTCPAddr: turnListenAddr,
+					RelayPortMin:  relayMin,
+					RelayPortMax:  relayMax,
+					Auth:          turn.AllowAllAuth{},
+					Log:           log,
+				}
+				if turnExternalIP != "" {
+					turnCfg.ExternalIP = turnExternalIP
+				}
+				cfg.TURN = turnCfg
+			}
+
 			srv, err := server.New(cfg)
 			if err != nil {
 				cfg.Log.Error("failed to create server", "err", err)
@@ -108,10 +168,16 @@ func main() {
 			exit := make(chan os.Signal, 1)
 			signal.Notify(exit, os.Interrupt, syscall.SIGTERM)
 			srv.RunInBackground()
-			<-exit
 
-			// Shutdown server once termination signal is received
-			srv.Shutdown()
+			select {
+			case <-exit:
+				cfg.Log.Info("shutting down")
+				srv.Shutdown()
+			case err := <-srv.ErrCh():
+				cfg.Log.Error("server component failed, exiting", "err", err)
+				srv.Shutdown()
+				return err
+			}
 			return nil
 		},
 	}

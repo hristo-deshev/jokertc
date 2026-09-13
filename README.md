@@ -21,6 +21,7 @@ This template provides two entry points:
 - Logging setup using the [slog logger](https://pkg.go.dev/golang.org/x/exp/slog) (with debug and json logging options)
 - [GitHub Workflows](.github/workflows/) for linting and testing, as well as releasing and publishing Docker images
 - Webserver with graceful shutdown, health probes, and Prometheus metrics
+- Embedded STUN/TURN server with configurable relay port range and manual WebRTC test page at `/ui/manual`
 
 ---
 
@@ -51,6 +52,7 @@ make build-cli
 | `server/`          | HTTP server implementation (chi router, graceful shutdown) |
 | `metrics/`             | Prometheus metrics (VictoriaMetrics-based)                 |
 | `common/`              | Shared utilities (structured logging)                      |
+| `turn/`                | Embedded STUN/TURN server (pion/turn v5), enabled via `--turn-listen-addr` |
 
 ---
 

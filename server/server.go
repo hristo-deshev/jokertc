@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	_ "embed"
 	"errors"
+	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -12,7 +15,11 @@ import (
 	"jokertc/api"
 	"jokertc/healthcheck"
 	"jokertc/metrics"
+	"jokertc/turn"
 )
+
+//go:embed static/webrtc-test.html
+var webrtcTestHTML []byte
 
 type HTTPServerConfig struct {
 	ListenAddr  string
@@ -24,6 +31,8 @@ type HTTPServerConfig struct {
 	GracefulShutdownDuration time.Duration
 	ReadTimeout              time.Duration
 	WriteTimeout             time.Duration
+
+	TURN *turn.Config // nil disables the embedded STUN/TURN server
 }
 
 type Server struct {
@@ -33,6 +42,11 @@ type Server struct {
 
 	srv        *http.Server
 	metricsSrv *http.Server
+	turnSrv    *turn.Server
+
+	errCh      chan error
+	wg         sync.WaitGroup
+	turnCancel context.CancelFunc
 }
 
 func New(cfg *HTTPServerConfig) (srv *Server, err error) {
@@ -50,6 +64,14 @@ func New(cfg *HTTPServerConfig) (srv *Server, err error) {
 			ReadTimeout:  cfg.ReadTimeout,
 			WriteTimeout: cfg.WriteTimeout,
 		}
+	}
+
+	if cfg.TURN != nil {
+		turnSrv, err := turn.New(cfg.TURN)
+		if err != nil {
+			return nil, fmt.Errorf("TURN server: %w", err)
+		}
+		srv.turnSrv = turnSrv
 	}
 
 	srv.srv = &http.Server{
@@ -72,6 +94,11 @@ func (srv *Server) getRouter() http.Handler {
 	api.RegisterRoutes(mux)
 	srv.healthcheck.RegisterRoutes(mux)
 
+	mux.Get("/ui/manual", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(webrtcTestHTML)
+	})
+
 	if srv.cfg.EnablePprof {
 		srv.log.Info("pprof API enabled")
 		mux.Mount("/debug", middleware.Profiler())
@@ -79,26 +106,47 @@ func (srv *Server) getRouter() http.Handler {
 	return mux
 }
 
+// RunInBackground starts all configured components in goroutines. The first
+// fatal error from any component is delivered on ErrCh.
 func (srv *Server) RunInBackground() {
+	srv.errCh = make(chan error, 4) // api, metrics, turn — buffered so senders never block
+
+	if srv.turnSrv != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		srv.turnCancel = cancel
+		srv.wg.Go(func() {
+			srv.log.Info("Starting TURN server", "listenUDP", srv.cfg.TURN.ListenUDPAddr, "listenTCP", srv.cfg.TURN.ListenTCPAddr)
+			if err := srv.turnSrv.Run(ctx); err != nil {
+				srv.log.Error("TURN server failed", "err", err)
+				srv.errCh <- err
+			}
+		})
+	}
+
 	// metrics
 	if srv.cfg.MetricsAddr != "" {
-		go func() {
+		srv.wg.Go(func() {
 			srv.log.With("metricsAddress", srv.cfg.MetricsAddr).Info("Starting metrics server")
-			err := srv.metricsSrv.ListenAndServe()
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				srv.log.Error("HTTP server failed", "err", err)
+			if err := srv.metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				srv.log.Error("Metrics server failed", "err", err)
+				srv.errCh <- err
 			}
-		}()
+		})
 	}
 
 	// api
-	go func() {
+	srv.wg.Go(func() {
 		srv.log.Info("Starting HTTP server", "listenAddress", srv.cfg.ListenAddr)
 		if err := srv.srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			srv.log.Error("HTTP server failed", "err", err)
+			srv.errCh <- err
 		}
-	}()
+	})
 }
+
+// ErrCh delivers the first fatal component error. Blocks until one arrives;
+// use in a select alongside the shutdown signal channel in main.
+func (srv *Server) ErrCh() <-chan error { return srv.errCh }
 
 func (srv *Server) Shutdown() {
 	// api
@@ -121,4 +169,11 @@ func (srv *Server) Shutdown() {
 			srv.log.Info("Metrics server gracefully stopped")
 		}
 	}
+
+	// embedded STUN/TURN
+	if srv.turnSrv != nil {
+		srv.turnCancel() // unblocks turnSrv.Run, which closes the server
+	}
+
+	srv.wg.Wait()
 }

@@ -38,6 +38,10 @@ This is a Go project template with two entry points:
 - **healthcheck/** - Route module owning `/livez`, `/readyz`, `/drain`, `/undrain` and the readiness state behind them
 - **metrics/** - VictoriaMetrics-based Prometheus metrics with HTTP middleware and the `/metrics` route module
 - **common/** - Shared utilities including structured logging setup (slog-based via httplog)
+- **turn/** - Embedded STUN/TURN server (pion/turn). `AllowAllAuth` accepts all
+  allocations with credential == username; swap it in `turn/auth.go` for real
+  auth. Component errors are fatal: any dead listener (HTTP, metrics, TURN)
+  kills the process via `Server.ErrCh()`.
 
 ### HTTP Server Pattern
 
