@@ -1,0 +1,115 @@
+# Strict golangci-lint configuration for this service.
+#
+# Adapted from Kubernetes' strict linting setup (kubernetes/kubernetes
+# hack/golangci-hints.yaml, v2 format). Kubernetes-specific linters that are
+# compiled into their custom golangci-lint build (logcheck, sorted,
+# kubeapilinter) and Kubernetes-only exclusion rules were removed.
+# Rationale for each deviation is documented in LINTING.md.
+
+version: "2"
+
+run:
+  timeout: 30m
+  modules-download-mode: readonly
+
+output:
+  sort-results: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  exclusions:
+    paths:
+      - third_party
+
+    # Excluding configuration per-path, per-linter, per-text and per-source.
+    rules:
+      # staticcheck: Developers tend to write in C-style with an explicit 'break'
+      # in a 'switch', so it's ok to ignore.
+      - path: (.+)\.go$
+        text: ineffective break statement. Did you mean to break out of the outer loop
+
+      # https://github.com/kubernetes/kubernetes/issues/117288#issuecomment-1507012435
+      - linters:
+          - gocritic
+        text: "ifElseChain: rewrite if-else to switch statement"
+
+      # Template code was written before the strict exported-comment rule was
+      # adopted; existing files are grandfathered until touched. New code must
+      # document exported symbols. Remove entries as files get documented.
+      - linters:
+          - revive
+          - staticcheck
+        text: comment on exported (method|function|type|const)|should have( a package)? comment|comment should be of the form|exported (.+) should have comment( \(or a comment on this block\))? or be unexported|package comment should be of the form "(.+)...|comment on exported (.+) should be of the form "(.+)...|should have a package comment
+
+  default: standard
+  enable: # please keep this alphabetized
+    - bodyclose
+    - contextcheck
+    - depguard
+    - errorlint
+    - forbidigo
+    - gocritic
+    - govet
+    - ineffassign
+    - modernize
+    - noctx
+    - revive
+    - sqlclosecheck
+    - staticcheck
+    - testifylint
+    - unused
+    - usestdlibvars
+
+  settings: # please keep this alphabetized
+    depguard:
+      rules:
+        go-cmp:
+          files:
+            - $all
+            - "!$test"
+            - "!**/test/**"
+            - "!**/testing/**"
+          deny:
+            - pkg: "github.com/google/go-cmp/cmp"
+              desc: "cmp is allowed only in test files"
+            - pkg: "html/template"
+              desc: "template is allowed only in test files as it disables dead code elimination"
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: md5\.*
+          msg: md5 is outdated, insecure, prefer a secure hash (such as sha256) or a non-cryptographic hash
+    modernize:
+      # Analyzers disabled following Kubernetes' rationale, see
+      # https://github.com/kubernetes/kubernetes/blob/master/hack/golangci-hints.yaml
+      disable:
+        # Replace interface{} with any. Developers may prefer interface{} for
+        # consistency; it is just syntactic sugar.
+        - any
+        # go 1.27: can declare embedded fields inline.
+        - embedlit
+        # Replace omitempty with omitzero for struct fields. Might interfere
+        # with encoding of API structs.
+        - omitzero
+        # Replace += with strings.Builder. In non-performance-sensitive code
+        # += can be more readable.
+        - stringsbuilder
+        # Replace context.WithCancel with t.Context in tests.
+        - testingcontext
+    revive:
+      # Only these rules are enabled.
+      rules:
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+    staticcheck:
+      checks:
+        - "all"
+        - "-QF1008"  # Omit embedded fields from selector expression
+    testifylint:
+      enable-all: true
+      disable:  # TODO: remove each disabled rule and fix it
+        - require-error
