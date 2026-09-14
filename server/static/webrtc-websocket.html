@@ -132,6 +132,58 @@ function closePC() {
   $('ping').disabled = true;
 }
 
+// sdpSummary picks out the lines worth seeing before the full text: what media
+// is offered, which codecs, and the ICE and DTLS identities that have to match
+// between the two sides for a call to come up.
+function sdpSummary(sdp) {
+  const rtpmap = {};
+  const summary = { media: [], codecs: [], iceUfrag: null, fingerprint: null, setup: null, bundle: null };
+
+  for (const line of sdp.split('\n')) {
+    const l = line.trim();
+    if (l.startsWith('m=')) summary.media.push(l.slice(2));
+    else if (l.startsWith('a=ice-ufrag:')) summary.iceUfrag ??= l.slice(12);
+    else if (l.startsWith('a=fingerprint:')) summary.fingerprint ??= l.slice(14);
+    else if (l.startsWith('a=setup:')) summary.setup ??= l.slice(8);
+    else if (l.startsWith('a=group:BUNDLE')) summary.bundle = l.slice(14).trim();
+    else if (l.startsWith('a=rtpmap:')) {
+      const [pt, codec] = l.slice(9).split(' ');
+      rtpmap[pt] = codec;
+    }
+  }
+  summary.codecs = Object.entries(rtpmap).map(([pt, codec]) => pt + ' ' + codec);
+  return summary;
+}
+
+// logSDP prints a full description to the browser console. SDP uses CRLF, which
+// renders as escaped characters in some consoles, so normalise it first and
+// print it as one block with line numbers.
+function logSDP(direction, kind, sdp) {
+  if (!sdp) {
+    console.warn('[ws-test] ' + direction + ' ' + kind + ': empty SDP');
+    return;
+  }
+  const text = sdp.replace(/\r\n/g, '\n').replace(/\s+$/, '');
+  const lines = text.split('\n');
+  const summary = sdpSummary(text);
+  const label = '[ws-test] SDP ' + direction + ' ' + kind + ' (' + lines.length + ' lines)';
+
+  console.groupCollapsed(label);
+  console.log('media:       ' + (summary.media.join(' | ') || '(none)'));
+  console.log('codecs:      ' + (summary.codecs.join(', ') || '(none)'));
+  console.log('bundle:      ' + (summary.bundle || '(none)'));
+  console.log('ice-ufrag:   ' + (summary.iceUfrag || '(none)'));
+  console.log('dtls setup:  ' + (summary.setup || '(none)'));
+  console.log('fingerprint: ' + (summary.fingerprint || '(none)'));
+  console.log('');
+  console.log(lines.map((l, i) => String(i + 1).padStart(3, ' ') + '  ' + l).join('\n'));
+  console.groupEnd();
+
+  log(direction + ' ' + kind + ': ' + lines.length + ' lines, ' +
+    (summary.media.length ? summary.media.length + ' m-section(s)' : 'no media') +
+    ' — full SDP in the browser console');
+}
+
 // iceServersFrom turns the relay's ready message into an RTCIceServer list.
 // Nothing is hardcoded here on purpose: if the relay advertises no servers the
 // call falls back to host candidates, which is itself worth seeing.
@@ -154,6 +206,7 @@ async function onReady(msg) {
   wireChannel(pc.createDataChannel('m2m'));
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
+  logSDP('local', 'offer', offer.sdp);
   send({ type: 'offer', sdp: offer.sdp });
   setStatus('ready — offer sent');
 }
@@ -163,8 +216,10 @@ async function onOffer(msg) {
     log('offer arrived before ready — ignoring');
     return;
   }
+  logSDP('remote', 'offer', msg.sdp);
   await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
   await pc.setLocalDescription(await pc.createAnswer());
+  logSDP('local', 'answer', pc.localDescription.sdp);
   send({ type: 'answer', sdp: pc.localDescription.sdp });
   setStatus('answer sent');
 }
@@ -182,6 +237,7 @@ async function onMessage(raw) {
       await onOffer(msg);
       break;
     case 'answer':
+      logSDP('remote', 'answer', msg.sdp);
       if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
       setStatus('answer applied');
       break;
