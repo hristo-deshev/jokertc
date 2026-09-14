@@ -42,6 +42,14 @@ phone.</p>
   </select>
   <label for="imei">IMEI (optional, logged by the relay)</label>
   <input id="imei" type="text">
+  <label for="waitGathering">
+    <input id="waitGathering" type="checkbox" checked>
+    Wait for ICE gathering before sending (non-trickle)
+  </label>
+  <p style="font-size: 0.8rem; margin: 0.2rem 0 0 0;">Leave this on for the ESP
+  device: it does not implement trickle ICE, so it needs every candidate inside
+  the offer or answer. Turn it off only when both sides are browsers, where
+  trickling connects sooner.</p>
   <p>
     <button id="connect">Connect</button>
     <button id="hangup" disabled>Hang up</button>
@@ -161,6 +169,11 @@ function buildPC(iceServers) {
     const typ = (c.match(/typ (host|srflx|relay|prflx)/) || [])[1] || 'unknown';
     candCounts[typ] = (candCounts[typ] || 0) + 1;
     log('local candidate: ' + c);
+    if (waitForGathering()) {
+      // Non-trickle: this candidate is already in the description that will be
+      // sent, so trickling it as well is redundant.
+      return;
+    }
     send({
       type: 'candidate',
       candidate: c,
@@ -184,6 +197,41 @@ function closePC() {
   pc = null;
   sendChannel = null;
   $('ping').disabled = true;
+}
+
+function waitForGathering() {
+  return $('waitGathering').checked;
+}
+
+// gatherComplete resolves once ICE gathering finishes, so the description sent
+// on the wire carries every candidate. A peer that does not implement trickle
+// ICE ignores anything sent afterwards, so without this it sees an offer with
+// no candidates, has nothing to pair with, and hangs up.
+//
+// It gives up waiting after 5s rather than stalling the call: a slow or
+// unreachable TURN server must not block a connection that host and
+// server-reflexive candidates could still make.
+function gatherComplete() {
+  if (!waitForGathering() || !pc || pc.iceGatheringState === 'complete') {
+    return Promise.resolve();
+  }
+  log('waiting for ICE gathering (state: ' + pc.iceGatheringState + ')');
+  return new Promise((resolve) => {
+    const done = () => {
+      if (!pc || pc.iceGatheringState !== 'complete') return;
+      pc.removeEventListener('icegatheringstatechange', done);
+      clearTimeout(timer);
+      log('ICE gathering complete — candidates: ' + JSON.stringify(candCounts));
+      resolve();
+    };
+    pc.addEventListener('icegatheringstatechange', done);
+    const timer = setTimeout(() => {
+      pc.removeEventListener('icegatheringstatechange', done);
+      log('ICE gathering timed out after 5s (state: ' +
+        (pc ? pc.iceGatheringState : 'closed') + ') — sending what we have');
+      resolve();
+    }, 5000);
+  });
 }
 
 // sdpSummary picks out the lines worth seeing before the full text: what media
@@ -258,10 +306,12 @@ async function onReady(msg) {
     return;
   }
   wireChannel(pc.createDataChannel('m2m'));
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  logSDP('local', 'offer', offer.sdp);
-  send({ type: 'offer', sdp: offer.sdp });
+  await pc.setLocalDescription(await pc.createOffer());
+  await gatherComplete();
+  // localDescription, not the createOffer result: only this one has the
+  // gathered candidates written into it.
+  logSDP('local', 'offer', pc.localDescription.sdp);
+  send({ type: 'offer', sdp: pc.localDescription.sdp });
   setStatus('ready — offer sent');
 }
 
@@ -273,6 +323,7 @@ async function onOffer(msg) {
   logSDP('remote', 'offer', msg.sdp);
   await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
   await pc.setLocalDescription(await pc.createAnswer());
+  await gatherComplete();
   logSDP('local', 'answer', pc.localDescription.sdp);
   send({ type: 'answer', sdp: pc.localDescription.sdp });
   setStatus('answer sent');
