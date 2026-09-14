@@ -13,6 +13,7 @@
 #   PUBLIC_HOST=relay.example.com ./serve.sh
 #   TURN_EXTERNAL_IP=203.0.113.7 ./serve.sh
 #   LISTEN_ADDR=0.0.0.0:9090 ./serve.sh
+#   DISABLE_STUN=1 ./serve.sh            # relay-only, for testing the TURN path
 
 set -euo pipefail
 
@@ -42,8 +43,18 @@ PUBLIC_HOST="${PUBLIC_HOST:-${DETECTED_IP}}"
 TURN_EXTERNAL_IP="${TURN_EXTERNAL_IP:-${DETECTED_IP}}"
 TURN_PORT="${TURN_LISTEN_ADDR##*:}"
 
-STUN_URL="${STUN_URL:-stun:${PUBLIC_HOST}:${TURN_PORT}}"
 TURN_URL="${TURN_URL:-turn:${PUBLIC_HOST}:${TURN_PORT}}"
+
+# DISABLE_STUN=1 forces the relay path: the server stops answering STUN binding
+# requests, and no STUN URL is advertised, so a peer that honours the ready
+# message has only a TURN allocation to work with.
+STUN_FLAGS=()
+if [ -n "${DISABLE_STUN:-}" ]; then
+	STUN_URL=""
+	STUN_FLAGS=(--turn-disable-stun)
+else
+	STUN_URL="${STUN_URL:-stun:${PUBLIC_HOST}:${TURN_PORT}}"
+fi
 
 BIN="${BIN:-./build/server}"
 
@@ -67,7 +78,7 @@ serve.sh: starting jokertc
   signaling page   http://${PUBLIC_HOST}:${LISTEN_ADDR##*:}/ui/websocket
   metrics          http://${PUBLIC_HOST}:${METRICS_ADDR##*:}/metrics
   STUN/TURN        ${TURN_LISTEN_ADDR} (UDP and TCP), relay ports ${TURN_RELAY_PORT_RANGE}
-  advertised to clients as ${STUN_URL} / ${TURN_URL}
+  advertised to clients as ${STUN_URL:-(no STUN, binding requests dropped)} / ${TURN_URL}
 
   Unauthenticated. Do not expose this to the open internet.
 
@@ -82,6 +93,7 @@ exec "${BIN}" \
 	--turn-listen-addr "${TURN_LISTEN_ADDR}" \
 	--turn-external-ip "${TURN_EXTERNAL_IP}" \
 	--turn-relay-port-range "${TURN_RELAY_PORT_RANGE}" \
+	"${STUN_FLAGS[@]}" \
 	--signaling \
 	--signaling-stun-url "${STUN_URL}" \
 	--signaling-turn-url "${TURN_URL}" \

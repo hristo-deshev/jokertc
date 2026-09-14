@@ -95,6 +95,11 @@ var flags []cli.Flag = []cli.Flag{
 		Value: 30,
 		Usage: "keepalive ping interval on idle signaling sockets; 0 disables",
 	},
+	&cli.BoolFlag{
+		Name:  "turn-disable-stun",
+		Value: false,
+		Usage: "drop STUN binding requests so peers can only use a TURN relay (testing)",
+	},
 	&cli.StringFlag{
 		Name:  "turn-relay-port-range",
 		Value: "49152-49352",
@@ -140,6 +145,7 @@ func main() {
 			turnListenAddr := cCtx.String("turn-listen-addr")
 			turnExternalIP := cCtx.String("turn-external-ip")
 			turnRelayRange := cCtx.String("turn-relay-port-range")
+			turnDisableSTUN := cCtx.Bool("turn-disable-stun")
 			enableSignaling := cCtx.Bool("signaling")
 			signalingStunURL := cCtx.String("signaling-stun-url")
 			signalingTurnURL := cCtx.String("signaling-turn-url")
@@ -193,6 +199,7 @@ func main() {
 					RelayPortMax:  relayMax,
 					Auth:          turn.AllowAllAuth{},
 					Log:           log,
+					DisableSTUN:   turnDisableSTUN,
 				}
 				if turnExternalIP != "" {
 					turnCfg.ExternalIP = turnExternalIP

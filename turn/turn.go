@@ -25,6 +25,12 @@ type Config struct {
 	RelayPortMax  int
 	Auth          Authenticator
 	Log           *httplog.Logger
+
+	// DisableSTUN drops STUN binding requests on the UDP listener, so peers
+	// cannot gather a server-reflexive candidate from this server and have to
+	// fall back to a relay allocation. It is a test lever for the TURN-only
+	// path, not something to run in production.
+	DisableSTUN bool
 }
 
 type Server struct {
@@ -90,8 +96,15 @@ func New(cfg *Config) (*Server, error) {
 			return nil, fmt.Errorf("TURN UDP listener: %w", err)
 		}
 		s.udpConn = udpConn
+		served := net.PacketConn(udpConn)
+		if cfg.DisableSTUN {
+			served = &stunFilterConn{PacketConn: udpConn, log: cfg.Log}
+			if cfg.Log != nil {
+				cfg.Log.Warn("STUN binding requests are disabled on the TURN UDP listener")
+			}
+		}
 		serverConfig.PacketConnConfigs = append(serverConfig.PacketConnConfigs, pion.PacketConnConfig{
-			PacketConn:            udpConn,
+			PacketConn:            served,
 			RelayAddressGenerator: newGen(),
 		})
 	}
