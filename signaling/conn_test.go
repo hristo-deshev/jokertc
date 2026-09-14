@@ -284,3 +284,84 @@ func TestLeaveLogsTheClientAddress(t *testing.T) {
 			strings.Contains(logs.String(), "remoteAddr=127.0.0.1:")
 	}, 5*time.Second, 10*time.Millisecond, "leave should log the client address; got: %s", logs.String())
 }
+
+func TestEveryFrameIsLoggedInBothDirections(t *testing.T) {
+	var logs safeBuffer
+	hub := newTestHub(t, &Config{Log: captureLogger(&logs)})
+	url := wsTestServer(t, hub)
+
+	device := dial(t, url)
+	device.join(roleDevice, "s1")
+	device.expect(typeJoined)
+
+	phone := dial(t, url)
+	phone.join(rolePhone, "s1")
+	phone.expect(typeReady)
+	device.expect(typeReady)
+
+	phone.send(`{"type":"offer","sdp":"v=0"}`)
+	device.readRaw()
+
+	assert.Eventually(t, func() bool {
+		out := logs.String()
+		return strings.Contains(out, `dir=in type=join`) &&
+			strings.Contains(out, `dir=out type=joined`) &&
+			strings.Contains(out, `dir=out type=ready`) &&
+			strings.Contains(out, `dir=in type=offer`) &&
+			strings.Contains(out, `dir=out type=offer`)
+	}, 5*time.Second, 10*time.Millisecond, "got: %s", logs.String())
+}
+
+func TestFrameBodiesAreLoggedAtDebugOnly(t *testing.T) {
+	var logs safeBuffer
+	hub := newTestHub(t, &Config{Log: captureLogger(&logs)})
+	url := wsTestServer(t, hub)
+
+	device := dial(t, url)
+	device.join(roleDevice, "s1")
+	device.expect(typeJoined)
+	phone := dial(t, url)
+	phone.join(rolePhone, "s1")
+	phone.expect(typeReady)
+
+	phone.send(`{"type":"candidate","candidate":"SECRETCANDIDATE"}`)
+	device.readRaw()
+
+	assert.Eventually(t, func() bool {
+		return strings.Contains(logs.String(), "SECRETCANDIDATE")
+	}, 5*time.Second, 10*time.Millisecond, "the body should appear at debug level; got: %s", logs.String())
+
+	// The same traffic under an info-level logger must not carry the body.
+	var quiet safeBuffer
+	quietHub := newTestHub(t, &Config{Log: &httplog.Logger{
+		Logger: slog.New(slog.NewTextHandler(&quiet, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}})
+	quietURL := wsTestServer(t, quietHub)
+	d2 := dial(t, quietURL)
+	d2.join(roleDevice, "s2")
+	d2.expect(typeJoined)
+	p2 := dial(t, quietURL)
+	p2.join(rolePhone, "s2")
+	p2.expect(typeReady)
+	p2.send(`{"type":"candidate","candidate":"OTHERSECRET"}`)
+	d2.readRaw()
+
+	assert.Eventually(t, func() bool {
+		return strings.Contains(quiet.String(), "dir=in type=candidate")
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.NotContains(t, quiet.String(), "OTHERSECRET", "info level must not carry frame bodies")
+}
+
+func TestMalformedFrameIsStillLogged(t *testing.T) {
+	var logs safeBuffer
+	hub := newTestHub(t, &Config{Log: captureLogger(&logs)})
+	client := dial(t, wsTestServer(t, hub))
+	client.join(roleDevice, "s1")
+	client.expect(typeJoined)
+
+	client.send(`not json at all`)
+
+	assert.Eventually(t, func() bool {
+		return strings.Contains(logs.String(), `dir=in type="(not json)"`)
+	}, 5*time.Second, 10*time.Millisecond, "got: %s", logs.String())
+}

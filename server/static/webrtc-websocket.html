@@ -86,12 +86,28 @@ function wireChannel(ch) {
   ch.onmessage = (e) => { $('messages').value += 'received ' + e.data + '\n'; };
 }
 
-function send(obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(obj));
-  } else {
-    log('not sending ' + obj.type + ': socket is not open');
+// logWS records every signaling frame in both directions: a one-line summary
+// on the page, and the full JSON in the browser console. SDP frames also get
+// their description expanded separately by logSDP.
+function logWS(direction, raw) {
+  let type = '(unparsed)';
+  try {
+    type = JSON.parse(raw).type ?? '(no type)';
+  } catch (err) {
+    console.warn('[ws-test] ' + direction + ' frame is not JSON:', raw);
   }
+  log(direction + ' ' + type + ' (' + raw.length + ' bytes)');
+  console.log('[ws-test] ws ' + direction + ' ' + type, raw);
+}
+
+function send(obj) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    log('not sending ' + obj.type + ': socket is not open');
+    return;
+  }
+  const raw = JSON.stringify(obj);
+  logWS('->', raw);
+  ws.send(raw);
 }
 
 // buildPC builds the peer connection for one call, using only the ICE servers
@@ -279,6 +295,7 @@ $('connect').onclick = () => {
     });
   };
   ws.onmessage = (e) => {
+    logWS('<-', e.data);
     onMessage(e.data).catch((err) => {
       console.error('[ws-test] message handling failed:', err);
       setStatus('error: ' + err);

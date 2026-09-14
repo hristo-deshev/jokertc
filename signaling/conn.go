@@ -96,6 +96,8 @@ func (c *conn) awaitJoin(ctx context.Context) (*peer, error) {
 		return nil, err
 	}
 
+	c.logFrame("in", data)
+
 	ft, ok := frameType(data)
 	if !ok {
 		return nil, errors.New("first frame is not JSON")
@@ -118,6 +120,26 @@ func (c *conn) requestClose(reason string) {
 	}
 }
 
+// logFrame records every frame crossing this socket. The type, direction and
+// size go at info; the body only at debug, because SDP and ICE candidates carry
+// both peers' network topology and would swamp a normal log.
+func (c *conn) logFrame(direction string, raw []byte) {
+	ft, ok := frameType(raw)
+	if !ok {
+		ft = "(not json)"
+	}
+	role, session := "", ""
+	if c.peer != nil {
+		role, session = c.peer.role, c.peer.label
+	}
+
+	c.hub.log.Info("signaling frame",
+		"dir", direction, "type", ft, "role", role, "session", session,
+		"remoteAddr", c.addr, "bytes", len(raw))
+	c.hub.log.Debug("signaling frame body",
+		"dir", direction, "type", ft, "session", session, "body", string(raw))
+}
+
 func (c *conn) readLoop(ctx context.Context) error {
 	for {
 		typ, data, err := c.ws.Read(ctx)
@@ -134,15 +156,15 @@ func (c *conn) readLoop(ctx context.Context) error {
 }
 
 func (c *conn) handleFrame(data []byte) error {
+	c.logFrame("in", data)
+
 	ft, ok := frameType(data)
 	if !ok {
-		c.hub.log.Warn("signaling frame is not JSON", "role", c.peer.role, "session", c.peer.label, "remoteAddr", c.addr, "bytes", len(data))
 		return nil
 	}
 
 	switch ft {
 	case typeOffer, typeAnswer, typeCandidate:
-		c.hub.log.Info("signaling frame forwarded", "type", ft, "from", c.peer.role, "session", c.peer.label, "bytes", len(data))
 		c.hub.forward(c.peer, ft, data)
 	case typeBye:
 		return errClientBye
@@ -167,6 +189,7 @@ func (c *conn) writeLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case msg := <-c.peer.out:
+			c.logFrame("out", msg)
 			if err := c.ws.Write(ctx, websocket.MessageText, msg); err != nil {
 				return
 			}
@@ -200,6 +223,7 @@ func (c *conn) flushAndClose(reason string) {
 	for {
 		select {
 		case msg := <-c.peer.out:
+			c.logFrame("out", msg)
 			if err := c.ws.Write(ctx, websocket.MessageText, msg); err != nil {
 				_ = c.ws.CloseNow()
 				return
