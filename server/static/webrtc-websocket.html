@@ -32,7 +32,8 @@ phone.</p>
 
 <fieldset>
   <legend>Session</legend>
-  <label for="session">Session id (must match in both tabs)</label>
+  <label for="session">Session id (must match in both tabs) — or paste a whole
+  join frame and the id is lifted out of it</label>
   <input id="session" type="text" value="manual-1">
   <label for="role">Role</label>
   <select id="role">
@@ -99,6 +100,39 @@ function logWS(direction, raw) {
   log(direction + ' ' + type + ' (' + raw.length + ' bytes)');
   console.log('[ws-test] ws ' + direction + ' ' + type, raw);
 }
+
+// joinFrameFrom parses a pasted join frame. It tolerates a log prefix before
+// the JSON, so a line copied straight out of the server log or the browser
+// console works: everything up to the first brace is dropped.
+function joinFrameFrom(text) {
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  try {
+    const msg = JSON.parse(text.slice(start));
+    if (msg && msg.type === 'join' && typeof msg.session === 'string' && msg.session) {
+      return msg;
+    }
+  } catch (err) {
+    // Not a frame: the field holds a plain session id, which is the normal case.
+  }
+  return null;
+}
+
+// Paste a join frame into the session box and its session id replaces it, with
+// the IMEI carried across too. The role is deliberately NOT applied: a pasted
+// frame is usually the other side's, and copying its role would silently put
+// both tabs in the same one.
+function extractPastedJoin() {
+  const msg = joinFrameFrom($('session').value);
+  if (!msg) return;
+  $('session').value = msg.session;
+  if (typeof msg.imei === 'string' && msg.imei) {
+    $('imei').value = msg.imei;
+  }
+  log('pulled session ' + msg.session + ' out of a pasted join frame');
+}
+
+$('session').addEventListener('input', extractPastedJoin);
 
 function send(obj) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
