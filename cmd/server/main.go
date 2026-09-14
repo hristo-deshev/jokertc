@@ -97,7 +97,7 @@ var flags []cli.Flag = []cli.Flag{
 	},
 	&cli.StringFlag{
 		Name:  "turn-relay-port-range",
-		Value: "50000-50100",
+		Value: "49152-49352",
 		Usage: "UDP port range for TURN relay allocations (min-max)",
 	},
 }

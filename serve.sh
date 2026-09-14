@@ -21,7 +21,7 @@ cd "$(dirname "$0")"
 LISTEN_ADDR="${LISTEN_ADDR:-0.0.0.0:8080}"
 METRICS_ADDR="${METRICS_ADDR:-0.0.0.0:8090}"
 TURN_LISTEN_ADDR="${TURN_LISTEN_ADDR:-0.0.0.0:3478}"
-TURN_RELAY_PORT_RANGE="${TURN_RELAY_PORT_RANGE:-50000-50100}"
+TURN_RELAY_PORT_RANGE="${TURN_RELAY_PORT_RANGE:-49152-49352}"
 
 # detect_ip returns the source address the host would use to reach the outside
 # world. It is the address clients are told to send STUN/TURN traffic to, so
