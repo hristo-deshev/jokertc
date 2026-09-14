@@ -58,7 +58,7 @@ func (r *closeRecord) wasCalled() bool {
 func joinTest(t *testing.T, hub *Hub, role, session string) (*peer, *closeRecord) {
 	t.Helper()
 	rec := &closeRecord{}
-	p, err := hub.join(joinMessage{Type: typeJoin, Role: role, Session: session}, rec.record)
+	p, err := hub.join(joinMessage{Type: typeJoin, Role: role, Session: session}, "203.0.113.9:5555", rec.record)
 	require.NoError(t, err)
 	return p, rec
 }
@@ -112,7 +112,7 @@ func TestJoinRejectsBadInput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := hub.join(tt.msg, func(string) {})
+			p, err := hub.join(tt.msg, "203.0.113.9:5555", func(string) {})
 			assert.Error(t, err)
 			assert.Nil(t, p)
 		})

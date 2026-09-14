@@ -29,12 +29,13 @@ type conn struct {
 	hub     *Hub
 	ws      *websocket.Conn
 	peer    *peer
+	addr    string
 	closing chan string
 }
 
 // handleConn serves one WebSocket until it closes. The first frame must be a
 // valid join; everything after it is dispatched to the state machine.
-func (s *Hub) handleConn(parent context.Context, ws *websocket.Conn) {
+func (s *Hub) handleConn(parent context.Context, ws *websocket.Conn, addr string) {
 	s.wg.Add(1)
 	defer s.wg.Done()
 
@@ -52,11 +53,11 @@ func (s *Hub) handleConn(parent context.Context, ws *websocket.Conn) {
 
 	ws.SetReadLimit(maxFrameBytes)
 
-	c := &conn{hub: s, ws: ws, closing: make(chan string, 1)}
+	c := &conn{hub: s, ws: ws, addr: addr, closing: make(chan string, 1)}
 
 	p, err := c.awaitJoin(ctx)
 	if err != nil {
-		s.log.Info("signaling connection rejected", "err", err)
+		s.log.Info("signaling connection rejected", "err", err, "remoteAddr", addr)
 		_ = ws.Close(websocket.StatusPolicyViolation, "join required")
 		return
 	}
@@ -80,7 +81,7 @@ func (s *Hub) handleConn(parent context.Context, ws *websocket.Conn) {
 	_ = ws.Close(websocket.StatusNormalClosure, "bye")
 
 	if !errors.Is(readErr, errClientBye) {
-		s.log.Debug("signaling read loop ended", "role", p.role, "session", p.label, "err", readErr)
+		s.log.Debug("signaling read loop ended", "role", p.role, "session", p.label, "remoteAddr", addr, "err", readErr)
 	}
 }
 
@@ -107,7 +108,7 @@ func (c *conn) awaitJoin(ctx context.Context) (*peer, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, err
 	}
-	return c.hub.join(m, c.requestClose)
+	return c.hub.join(m, c.addr, c.requestClose)
 }
 
 func (c *conn) requestClose(reason string) {
@@ -135,7 +136,7 @@ func (c *conn) readLoop(ctx context.Context) error {
 func (c *conn) handleFrame(data []byte) error {
 	ft, ok := frameType(data)
 	if !ok {
-		c.hub.log.Warn("signaling frame is not JSON", "role", c.peer.role, "session", c.peer.label, "bytes", len(data))
+		c.hub.log.Warn("signaling frame is not JSON", "role", c.peer.role, "session", c.peer.label, "remoteAddr", c.addr, "bytes", len(data))
 		return nil
 	}
 

@@ -3,13 +3,17 @@ package signaling
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/go-chi/httplog/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +28,7 @@ func wsTestServer(t *testing.T, hub *Hub) string {
 		if err != nil {
 			return
 		}
-		hub.handleConn(r.Context(), ws)
+		hub.handleConn(r.Context(), ws, clientAddr(r))
 	}))
 	t.Cleanup(hs.Close)
 	return "ws" + strings.TrimPrefix(hs.URL, "http")
@@ -208,4 +212,75 @@ func TestServerCloseEndsLiveConnections(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close() did not return")
 	}
+}
+
+// captureLogger returns a logger writing into w, so tests can assert on what
+// the package actually logs rather than on its internal state.
+func captureLogger(w io.Writer) *httplog.Logger {
+	return &httplog.Logger{
+		Logger: slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+}
+
+// safeBuffer serialises writes from the connection goroutines against reads in
+// the test goroutine.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestJoinLogsTheClientAddress(t *testing.T) {
+	var logs safeBuffer
+	hub := newTestHub(t, &Config{Log: captureLogger(&logs)})
+	client := dial(t, wsTestServer(t, hub))
+
+	client.join(roleDevice, "s1")
+	client.expect(typeJoined)
+
+	assert.Eventually(t, func() bool {
+		return strings.Contains(logs.String(), "signaling peer joined") &&
+			strings.Contains(logs.String(), "remoteAddr=127.0.0.1:")
+	}, 5*time.Second, 10*time.Millisecond, "join should log the client address; got: %s", logs.String())
+}
+
+func TestRejectedConnectionLogsTheClientAddress(t *testing.T) {
+	var logs safeBuffer
+	hub := newTestHub(t, &Config{Log: captureLogger(&logs)})
+	client := dial(t, wsTestServer(t, hub))
+
+	client.send(`{"type":"offer","sdp":"v=0"}`)
+	_ = client.readErr()
+
+	assert.Eventually(t, func() bool {
+		return strings.Contains(logs.String(), "signaling connection rejected") &&
+			strings.Contains(logs.String(), "remoteAddr=127.0.0.1:")
+	}, 5*time.Second, 10*time.Millisecond, "a rejected connection should log the client address; got: %s", logs.String())
+}
+
+func TestLeaveLogsTheClientAddress(t *testing.T) {
+	var logs safeBuffer
+	hub := newTestHub(t, &Config{Log: captureLogger(&logs)})
+	client := dial(t, wsTestServer(t, hub))
+
+	client.join(roleDevice, "s1")
+	client.expect(typeJoined)
+	client.send(`{"type":"bye"}`)
+	_ = client.readErr()
+
+	assert.Eventually(t, func() bool {
+		return strings.Contains(logs.String(), "signaling peer left") &&
+			strings.Contains(logs.String(), "remoteAddr=127.0.0.1:")
+	}, 5*time.Second, 10*time.Millisecond, "leave should log the client address; got: %s", logs.String())
 }

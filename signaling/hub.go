@@ -35,6 +35,7 @@ type peer struct {
 	sessionID string // lowercased lookup key
 	label     string // session id as the client wrote it, for logs
 	imei      string
+	addr      string // client address, for logs only
 
 	out       chan []byte
 	closeFn   func(reason string)
@@ -150,7 +151,7 @@ func (s *session) stopLonely() {
 
 // join validates a join frame and registers the peer. A returned error means
 // the caller must close the socket without a reply.
-func (s *Hub) join(m joinMessage, closeFn func(reason string)) (*peer, error) {
+func (s *Hub) join(m joinMessage, addr string, closeFn func(reason string)) (*peer, error) {
 	if m.Session == "" {
 		return nil, errors.New("join: empty session id")
 	}
@@ -163,6 +164,7 @@ func (s *Hub) join(m joinMessage, closeFn func(reason string)) (*peer, error) {
 		sessionID: strings.ToLower(m.Session),
 		label:     m.Session,
 		imei:      m.Imei,
+		addr:      addr,
 		out:       make(chan []byte, s.cfg.SendBuffer),
 		closeFn:   closeFn,
 	}
@@ -202,7 +204,7 @@ func (s *Hub) join(m joinMessage, closeFn func(reason string)) (*peer, error) {
 		replaced.close("replaced by a new " + p.role)
 	}
 	countPeerJoined(p.role)
-	s.log.Info("signaling peer joined", "role", p.role, "session", p.label, "imei", p.imei)
+	s.log.Info("signaling peer joined", "role", p.role, "session", p.label, "imei", p.imei, "remoteAddr", p.addr)
 	return p, nil
 }
 
@@ -229,7 +231,7 @@ func (s *Hub) leave(p *peer) {
 	if other != nil {
 		other.send(mustMarshal(byeMessage{Type: typeBye}))
 	}
-	s.log.Info("signaling peer left", "role", p.role, "session", p.label)
+	s.log.Info("signaling peer left", "role", p.role, "session", p.label, "remoteAddr", p.addr)
 }
 
 // forward passes a frame to the peer on the other side of the session,
@@ -268,7 +270,7 @@ func (s *Hub) expireLonely(device *peer) {
 	s.mu.Unlock()
 
 	noReceiverTimeouts.Inc()
-	s.log.Info("signaling device had no receiver", "session", device.label, "timeout", s.cfg.NoReceiverTimeout)
+	s.log.Info("signaling device had no receiver", "session", device.label, "remoteAddr", device.addr, "timeout", s.cfg.NoReceiverTimeout)
 	device.send(mustMarshal(byeMessage{Type: typeBye}))
 	device.close("no receiver")
 }
