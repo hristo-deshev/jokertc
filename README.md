@@ -31,7 +31,7 @@ This template provides two entry points:
 
 ```bash
 make build-server
-./build/server --listen-addr 127.0.0.1:8080 --metrics-addr 127.0.0.1:8090
+./build/server --listen-addr 127.0.0.1:9000 --metrics-addr 127.0.0.1:8090
 ```
 
 **Build and run the CLI:**
@@ -58,23 +58,26 @@ make build-cli
 
 ## HTTP Server Endpoints
 
-The server runs two HTTP servers: main API (default `:8080`) and metrics (default `:8090`).
+The server runs two HTTP servers: main API (default `:9000`) and metrics (default `:8090`).
 
 | Endpoint   | Port | Description                                        |
 | ---------- | ---- | -------------------------------------------------- |
-| `/api`     | 8080 | Main API endpoint                                  |
-| `/livez`   | 8080 | Liveness probe for health checks                   |
-| `/readyz`  | 8080 | Readiness probe for health checks                  |
-| `/drain`   | 8080 | Enable drain mode (for graceful shutdown)          |
-| `/undrain` | 8080 | Disable drain mode                                 |
-| `/debug/*` | 8080 | pprof debug endpoints (when `--pprof` flag is set) |
-| `/metrics` | 8090 | Prometheus metrics                                 |
+| `/api`           | 9000 | Main API endpoint                                  |
+| `/livez`         | 9000 | Liveness probe for health checks                   |
+| `/readyz`        | 9000 | Readiness probe for health checks                  |
+| `/drain`         | 9000 | Enable drain mode (for graceful shutdown)          |
+| `/undrain`       | 9000 | Disable drain mode                                 |
+| `/ws`            | 9000 | WebRTC signaling (WebSocket); 400 on a plain GET   |
+| `/ui/manual`     | 9000 | Copy/paste WebRTC test page                        |
+| `/ui/websocket`  | 9000 | Test page driving `/ws` (only when signaling is on) |
+| `/debug/*`       | 9000 | pprof debug endpoints (when `--pprof` flag is set) |
+| `/metrics`       | 8090 | Prometheus metrics                                 |
 
 ### CLI Flags
 
 | Flag              | Default          | Description                           |
 | ----------------- | ---------------- | ------------------------------------- |
-| `--listen-addr`   | `127.0.0.1:8080` | Address for API server                |
+| `--listen-addr`   | `127.0.0.1:9000` | Address for API server                |
 | `--metrics-addr`  | `127.0.0.1:8090` | Address for Prometheus metrics        |
 | `--log-json`      | `false`          | Log in JSON format                    |
 | `--log-debug`     | `false`          | Enable debug logging                  |

@@ -261,7 +261,7 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
   });
 } else {
   log('camera API unavailable on insecure origin (plain http + non-localhost).');
-  log('webcam needs: open http://localhost:8080/ui/websocket on this machine, or serve over HTTPS.');
+  log('webcam needs: open http://localhost:9000/ui/websocket on this machine, or serve over HTTPS.');
   log('signaling + TURN + data channel tests still work without a camera.');
 }
 

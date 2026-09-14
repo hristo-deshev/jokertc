@@ -132,7 +132,7 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
   }).catch((err) => { console.error('[webrtc-test] getUserMedia error:', err); logIce('getUserMedia error: ' + err); });
 } else {
   logIce('camera API unavailable on insecure origin (plain http + non-localhost).');
-  logIce('webcam needs: open http://localhost:8080/ui/manual on this machine, or serve over HTTPS.');
+  logIce('webcam needs: open http://localhost:9000/ui/manual on this machine, or serve over HTTPS.');
   logIce('STUN/TURN + data channel tests still work without camera.');
 }
 

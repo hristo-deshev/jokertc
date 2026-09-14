@@ -22,7 +22,7 @@ import (
 var flags []cli.Flag = []cli.Flag{
 	&cli.StringFlag{
 		Name:  "listen-addr",
-		Value: "127.0.0.1:8080",
+		Value: "127.0.0.1:9000",
 		Usage: "address to listen on for API",
 	},
 	&cli.StringFlag{

@@ -45,4 +45,4 @@ This is a Go project template with two entry points:
 
 ### HTTP Server Pattern
 
-The server runs two HTTP servers: main API (default :8080) and metrics (default :8090). Supports graceful shutdown with configurable drain duration for load balancer compatibility.
+The server runs two HTTP servers: main API (default :9000) and metrics (default :8090). Supports graceful shutdown with configurable drain duration for load balancer compatibility.
