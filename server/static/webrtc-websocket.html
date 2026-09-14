@@ -16,10 +16,14 @@
 <body>
 <h1>WebRTC signaling test (/ws)</h1>
 <p>Open this page in two tabs. Put the same session id in both, pick
-<em>device</em> in one and <em>phone</em> in the other, then Connect in both.
-The relay pairs them and tells each side who offers: the phone offers, the
-device answers. STUN and TURN come from the relay's <code>ready</code> message,
-so a connected call also proves the credential it issues works.</p>
+<em>initiator</em> in one and <em>answerer</em> in the other, then Connect in
+both. The initiator creates the offer; the answerer replies to it. STUN and
+TURN come from the relay's <code>ready</code> message, so a connected call also
+proves the credential it issues works.</p>
+<p>Initiator and answerer are sent on the wire as the roles
+<code>phone</code> and <code>device</code>, which is what the relay and the
+device firmware speak. The relay decides who offers, and always picks the
+phone.</p>
 <p>For the copy/paste version with no signaling server, see
 <a href="/ui/manual">/ui/manual</a>.</p>
 
@@ -32,8 +36,8 @@ so a connected call also proves the credential it issues works.</p>
   <input id="session" type="text" value="manual-1">
   <label for="role">Role</label>
   <select id="role">
-    <option value="phone">phone (initiator — creates the offer)</option>
-    <option value="device">device (answerer)</option>
+    <option value="phone">initiator — creates the offer</option>
+    <option value="device">answerer — replies to the offer</option>
   </select>
   <label for="imei">IMEI (optional, logged by the relay)</label>
   <input id="imei" type="text">
