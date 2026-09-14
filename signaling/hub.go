@@ -198,6 +198,8 @@ func (s *Hub) join(m joinMessage, addr string, closeFn func(reason string)) (*pe
 	} else if p.role == roleDevice && s.cfg.NoReceiverTimeout > 0 {
 		sess.lonely = time.AfterFunc(s.cfg.NoReceiverTimeout, func() { s.expireLonely(p) })
 	}
+
+	s.announceJoin(p, m.Session)
 	s.mu.Unlock()
 
 	if replaced != nil {
@@ -206,6 +208,23 @@ func (s *Hub) join(m joinMessage, addr string, closeFn func(reason string)) (*pe
 	countPeerJoined(p.role)
 	s.log.Info("signaling peer joined", "role", p.role, "session", p.label, "imei", p.imei, "remoteAddr", p.addr)
 	return p, nil
+}
+
+// announceJoin tells every other connected client that a peer joined, naming
+// the session it joined. It is what lets a client discover a session id it was
+// never told out of band. The joiner is skipped: it already knows.
+//
+// Callers must hold s.mu. Sending is a buffered channel write, so this cannot
+// block however many peers are connected.
+func (s *Hub) announceJoin(joiner *peer, session string) {
+	frame := mustMarshal(remoteJoinedMessage{Type: typeRemoteJoined, Session: session})
+	for _, sess := range s.sessions {
+		for _, other := range []*peer{sess.device, sess.phone} {
+			if other != nil && other != joiner {
+				other.send(frame)
+			}
+		}
+	}
 }
 
 // leave removes a peer and tells its counterpart. It acts only if the session

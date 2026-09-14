@@ -355,6 +355,18 @@ async function onMessage(raw) {
         });
       }
       break;
+    case 'remote_joined':
+      // The relay announces every join to every client, so this is how a tab
+      // learns a session id it was never told - a device that generates its own
+      // UUID, for example. The box is updated; connecting to it stays manual,
+      // because a page that re-pointed itself mid-call would be worse than
+      // useless.
+      if (typeof msg.session === 'string' && msg.session) {
+        $('session').value = msg.session;
+        log('remote_joined: session box set to ' + msg.session +
+          ' — Hang up and Connect to join it');
+      }
+      break;
     case 'bye':
       setStatus('the other side left');
       closePC();

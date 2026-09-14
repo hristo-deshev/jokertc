@@ -13,6 +13,10 @@ const (
 	typeCandidate = "candidate"
 	typeBye       = "bye"
 
+	// typeRemoteJoined announces a join to every other connected client, so a
+	// test page can discover a session id it was not told out of band.
+	typeRemoteJoined = "remote_joined"
+
 	roleDevice = "device"
 	rolePhone  = "phone"
 
@@ -46,6 +50,11 @@ type turnCredential struct {
 
 type byeMessage struct {
 	Type string `json:"type"`
+}
+
+type remoteJoinedMessage struct {
+	Type    string `json:"type"`
+	Session string `json:"session"`
 }
 
 // frameType reports the "type" field of a client frame. ok is false when the

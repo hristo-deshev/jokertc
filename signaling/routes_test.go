@@ -89,5 +89,5 @@ func TestIdleSocketSurvivesWriteTimeout(t *testing.T) {
 	sent := `{"type":"candidate","candidate":"candidate:1 1 udp 1 10.0.0.1 1 typ host"}`
 	phone.send(sent)
 
-	assert.Equal(t, sent, string(device.readRaw()))
+	assert.Equal(t, sent, string(device.expectRaw(typeCandidate)))
 }

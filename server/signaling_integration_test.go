@@ -96,6 +96,15 @@ func (c *wsClient) readRaw() []byte {
 	return data
 }
 
+// expectRaw reads until a frame of the wanted type arrives and returns it
+// verbatim. Callers cannot just take the next frame: the relay announces every
+// join to every client, so remote_joined frames interleave with the exchange.
+func (c *wsClient) expectRaw(want string) []byte {
+	c.t.Helper()
+	raw, _ := c.expect(want)
+	return raw
+}
+
 // expect reads until a frame of the wanted type arrives, returning it raw and
 // decoded so callers can assert on either.
 func (c *wsClient) expect(want string) ([]byte, map[string]any) {
@@ -160,9 +169,7 @@ func TestSignalingPairsDeviceAndPhone(t *testing.T) {
 
 	// ready is sent once per pairing: a further frame must not produce another.
 	phone.send(`{"type":"offer","sdp":"v=0"}`)
-	raw := device.readRaw()
-	var m map[string]any
-	require.NoError(t, json.Unmarshal(raw, &m))
+	_, m := device.expect("offer")
 	assert.Equal(t, "offer", m["type"])
 }
 
@@ -187,15 +194,15 @@ func TestSignalingForwardsFramesByteForByte(t *testing.T) {
 
 	offer := `{"type":"offer","sdp":"v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n","unmodelled":{"deep":[1,2,3]},"order":"preserved"}`
 	phone.send(offer)
-	assert.Equal(t, offer, string(device.readRaw()))
+	assert.Equal(t, offer, string(device.expectRaw("offer")))
 
 	answer := `{"type":"answer","sdp":"v=0\r\n","vendorExtension":true}`
 	device.send(answer)
-	assert.Equal(t, answer, string(phone.readRaw()))
+	assert.Equal(t, answer, string(phone.expectRaw("answer")))
 
 	candidate := `{"type":"candidate","candidate":"candidate:1 1 udp 2130706431 10.0.0.1 54321 typ host","sdpMid":"0","sdpMLineIndex":0,"usernameFragment":"abc"}`
 	device.send(candidate)
-	assert.Equal(t, candidate, string(phone.readRaw()))
+	assert.Equal(t, candidate, string(phone.expectRaw("candidate")))
 }
 
 func TestSignalingNotifiesTheSurvivorWhenAPeerLeaves(t *testing.T) {
@@ -248,7 +255,7 @@ func TestSignalingDeviceWithAPhoneDoesNotTimeOut(t *testing.T) {
 
 	candidate := `{"type":"candidate","candidate":"still here"}`
 	phone.send(candidate)
-	assert.Equal(t, candidate, string(device.readRaw()))
+	assert.Equal(t, candidate, string(device.expectRaw("candidate")))
 }
 
 // TestSignalingShutdownClosesLiveSockets is the test that fails if Shutdown

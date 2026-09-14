@@ -315,3 +315,54 @@ func TestNewRejectsUnimplementedTurnSecret(t *testing.T) {
 	_, err := New(&Config{TurnSecret: "shared", Log: testLogger(t)})
 	assert.Error(t, err)
 }
+
+func TestJoinBroadcastsRemoteJoinedToOtherPeers(t *testing.T) {
+	hub := newTestHub(t, nil)
+
+	watcher, _ := joinTest(t, hub, roleDevice, "watching-session")
+	drain(watcher)
+
+	joinTest(t, hub, rolePhone, "ad92f4bf-02e1-4167-863d-da417c5e131a")
+
+	frames := drain(watcher)
+	notice := firstOfType(frames, typeRemoteJoined)
+	require.NotNil(t, notice, "an existing peer should be told about a join elsewhere; got %v", typesOf(frames))
+	assert.Equal(t, "ad92f4bf-02e1-4167-863d-da417c5e131a", notice["session"])
+}
+
+func TestJoinerDoesNotReceiveItsOwnRemoteJoined(t *testing.T) {
+	hub := newTestHub(t, nil)
+
+	joiner, _ := joinTest(t, hub, roleDevice, "s1")
+
+	assert.NotContains(t, typesOf(drain(joiner)), typeRemoteJoined)
+}
+
+func TestRemoteJoinedReachesBothSidesOfAnotherSession(t *testing.T) {
+	hub := newTestHub(t, nil)
+
+	device, _ := joinTest(t, hub, roleDevice, "pair")
+	phone, _ := joinTest(t, hub, rolePhone, "pair")
+	drain(device)
+	drain(phone)
+
+	joinTest(t, hub, roleDevice, "newcomer")
+
+	assert.Contains(t, typesOf(drain(device)), typeRemoteJoined)
+	assert.Contains(t, typesOf(drain(phone)), typeRemoteJoined)
+}
+
+// The counterpart in the same session is told too: it is a peer like any other,
+// and the notice carries the session id it already knows, so it is harmless.
+func TestRemoteJoinedUsesTheSessionIDAsWritten(t *testing.T) {
+	hub := newTestHub(t, nil)
+
+	watcher, _ := joinTest(t, hub, roleDevice, "watcher")
+	drain(watcher)
+
+	joinTest(t, hub, rolePhone, "MiXeD-CaSe-Id")
+
+	notice := firstOfType(drain(watcher), typeRemoteJoined)
+	require.NotNil(t, notice)
+	assert.Equal(t, "MiXeD-CaSe-Id", notice["session"], "the notice should carry the id as the client wrote it")
+}

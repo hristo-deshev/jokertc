@@ -81,6 +81,21 @@ func (c *testClient) read() map[string]any {
 	return m
 }
 
+// expectRaw reads until a frame of the wanted type arrives and returns it
+// verbatim, skipping the remote_joined announcements the relay broadcasts.
+func (c *testClient) expectRaw(want string) []byte {
+	c.t.Helper()
+	for range 10 {
+		raw := c.readRaw()
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err == nil && m["type"] == want {
+			return raw
+		}
+	}
+	c.t.Fatalf("no %q frame arrived", want)
+	return nil
+}
+
 // expect reads until a frame of the wanted type arrives.
 func (c *testClient) expect(want string) map[string]any {
 	c.t.Helper()
