@@ -103,6 +103,8 @@ let pc = null;
 let sendChannel = null;
 let localStream = null;
 let candCounts = {};
+let pairTimer = null;
+let selectedPairId = null;
 
 // State for one Connect, tracking whether this page may still follow a
 // remote_joined into another session.
@@ -190,6 +192,7 @@ function buildPC(iceServers) {
   closePC();
   pc = new RTCPeerConnection({ iceServers });
   candCounts = { host: 0, srflx: 0, relay: 0, prflx: 0, unknown: 0 };
+  selectedPairId = null;
   $('messages').value = '';
   $('remoteVideo').srcObject = null;
 
@@ -211,8 +214,20 @@ function buildPC(iceServers) {
       sdpMLineIndex: e.candidate.sdpMLineIndex,
     });
   };
-  pc.oniceconnectionstatechange = () => log('ICE state: ' + pc.iceConnectionState);
-  pc.onconnectionstatechange = () => setStatus('connection: ' + pc.connectionState);
+  pc.oniceconnectionstatechange = () => {
+    log('ICE state: ' + pc.iceConnectionState);
+    if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      watchSelectedPair();
+    }
+  };
+  pc.onconnectionstatechange = () => {
+    setStatus('connection: ' + pc.connectionState);
+    if (pc.connectionState === 'connected') watchSelectedPair();
+    if (pc.connectionState === 'failed') {
+      stopWatchingPair();
+      logAllPairs();
+    }
+  };
   pc.ontrack = (e) => { $('remoteVideo').srcObject = e.streams[0]; };
   pc.ondatachannel = (e) => wireChannel(e.channel);
 
@@ -231,6 +246,92 @@ function buildPC(iceServers) {
 
 function compactSDP() {
   return $('compactSdp').checked;
+}
+
+// selectedPair returns the candidate pair the connection is actually using, or
+// null while ICE is still deciding.
+//
+// The transport report names it directly and is the reliable source. Some
+// browsers do not publish selectedCandidatePairId, so a nominated succeeded
+// pair is taken as the answer there.
+async function selectedPair(stats) {
+  let pair = null;
+  stats.forEach((r) => {
+    if (r.type === 'transport' && r.selectedCandidatePairId) {
+      pair = stats.get(r.selectedCandidatePairId) || pair;
+    }
+  });
+  if (!pair) {
+    stats.forEach((r) => {
+      if (!pair && r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) pair = r;
+    });
+  }
+  return pair;
+}
+
+// describeCandidate turns one candidate report into a single line. relayProtocol
+// is the transport to the TURN server and only appears on a relay candidate, so
+// it also tells you which relay was used.
+function describeCandidate(c) {
+  if (!c) return '(unknown)';
+  const bits = [c.candidateType, c.protocol, (c.address || c.ip || '?') + ':' + c.port];
+  if (c.relayProtocol) bits.push('via ' + c.relayProtocol);
+  if (c.url) bits.push(c.url);
+  if (c.networkType) bits.push(c.networkType);
+  return bits.join(' ');
+}
+
+// watchSelectedPair polls until the connection ends, and logs only when the
+// chosen pair changes. ICE can promote a better pair after it first connects,
+// so a single log at connect time would be a snapshot, not the truth.
+function watchSelectedPair() {
+  if (pairTimer) return;
+  reportSelectedPair();
+  pairTimer = setInterval(reportSelectedPair, 2000);
+}
+
+function stopWatchingPair() {
+  if (!pairTimer) return;
+  clearInterval(pairTimer);
+  pairTimer = null;
+}
+
+async function reportSelectedPair() {
+  if (!pc) { stopWatchingPair(); return; }
+  const stats = await pc.getStats();
+  const pair = await selectedPair(stats);
+  if (!pair || pair.id === selectedPairId) return;
+
+  const first = selectedPairId === null;
+  selectedPairId = pair.id;
+  const local = stats.get(pair.localCandidateId);
+  const remote = stats.get(pair.remoteCandidateId);
+  const line = (first ? 'connected over: ' : 'candidate pair changed to: ') +
+    describeCandidate(local) + '  ->  ' + describeCandidate(remote);
+
+  log(line);
+  console.groupCollapsed('[ws-test] ' + line);
+  console.log('local: ', local);
+  console.log('remote:', remote);
+  console.log('pair:  ', pair);
+  console.groupEnd();
+}
+
+// logAllPairs runs when ICE gives up. Every pair it tried is listed with the
+// state it ended in, which is what says whether the relay was ever reached.
+async function logAllPairs() {
+  if (!pc) return;
+  const stats = await pc.getStats();
+  const rows = [];
+  stats.forEach((r) => {
+    if (r.type !== 'candidate-pair') return;
+    rows.push(r.state + '  ' + describeCandidate(stats.get(r.localCandidateId)) +
+      '  ->  ' + describeCandidate(stats.get(r.remoteCandidateId)));
+  });
+  log('ICE failed with no usable pair — ' + rows.length + ' pair(s) tried, see the console');
+  console.groupCollapsed('[ws-test] candidate pairs after failure (' + rows.length + ')');
+  rows.forEach((r) => console.log(r));
+  console.groupEnd();
 }
 
 // buildCompactMedia creates the m-sections by hand instead of letting addTrack
@@ -270,6 +371,7 @@ function preferH264(tx) {
 }
 
 function closePC() {
+  stopWatchingPair();
   if (!pc) return;
   try { pc.close(); } catch (err) { console.error('[ws-test] pc.close() failed:', err); }
   pc = null;
