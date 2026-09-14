@@ -20,6 +20,12 @@
 both. The initiator creates the offer; the answerer replies to it. STUN and
 TURN come from the relay's <code>ready</code> message, so a connected call also
 proves the credential it issues works.</p>
+<p>An initiator that connects and then sits alone follows the first
+<code>remote_joined</code> it sees: the announced session id goes into the box,
+the page rejoins on it, and the offer goes out when the relay reports both
+sides are present. So you can Connect on any id and let a device that picks its
+own session pull you to it. It only follows while it is still alone, and only
+once per Connect.</p>
 <p>Initiator and answerer are sent on the wire as the roles
 <code>phone</code> and <code>device</code>, which is what the relay and the
 device firmware speak. The relay decides who offers, and always picks the
@@ -50,6 +56,16 @@ phone.</p>
   device: it does not implement trickle ICE, so it needs every candidate inside
   the offer or answer. Turn it off only when both sides are browsers, where
   trickling connects sooner.</p>
+  <label for="compactSdp">
+    <input id="compactSdp" type="checkbox" checked>
+    Compact media: video receive-only, H264 only
+  </label>
+  <p style="font-size: 0.8rem; margin: 0.2rem 0 0 0;">Leave this on for the ESP
+  device. The browser default offers VP8, VP9, AV1, four H264 profiles and a
+  retransmission codec for each, which the device cannot parse. This cuts the
+  video section to one H264 payload type. It also stops the browser sending
+  video, so in a two-tab test only the initiator sees a picture. Audio is
+  receive-only in both modes and the microphone is never captured.</p>
   <p>
     <button id="connect">Connect</button>
     <button id="hangup" disabled>Hang up</button>
@@ -87,6 +103,20 @@ let pc = null;
 let sendChannel = null;
 let localStream = null;
 let candCounts = {};
+
+// State for one Connect, tracking whether this page may still follow a
+// remote_joined into another session.
+//
+//   joinedSession  the id we actually joined with, which is not the box once a
+//                  remote_joined has moved us
+//   readyMsg       the last ready. A set value means the session we are in has
+//                  both sides, so there is nothing left to follow
+//   offerSent      one offer per peer connection
+//   chased         a remote_joined was already followed
+let joinedSession = '';
+let readyMsg = null;
+let offerSent = false;
+let chased = false;
 
 function wireChannel(ch) {
   sendChannel = ch;
@@ -186,9 +216,57 @@ function buildPC(iceServers) {
   pc.ontrack = (e) => { $('remoteVideo').srcObject = e.streams[0]; };
   pc.ondatachannel = (e) => wireChannel(e.channel);
 
-  if (localStream) {
-    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+  if (compactSDP()) {
+    buildCompactMedia();
+  } else {
+    // Added before any track so the audio section keeps mid 0. The camera is
+    // the only thing this page sends, so the microphone is never captured and
+    // there is no audio track to add here.
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+    if (localStream) {
+      localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+    }
   }
+}
+
+function compactSDP() {
+  return $('compactSdp').checked;
+}
+
+// buildCompactMedia creates the m-sections by hand instead of letting addTrack
+// do it, so the offer stays close to the one the device firmware is known to
+// accept: H264 only, and nothing sent. The sections are added in the order
+// audio, video, so they carry mid 0 and 1 as the device expects. The data
+// channel is added by the caller and becomes mid 2.
+//
+// Both directions are recvonly. The device is the source: this page watches and
+// listens, and sends no media of its own.
+function buildCompactMedia() {
+  pc.addTransceiver('audio', { direction: 'recvonly' });
+  preferH264(pc.addTransceiver('video', { direction: 'recvonly' }));
+}
+
+// preferH264 cuts the video codec list down to the single H264 mode the device
+// supports: packetization-mode=1, constrained baseline level 3.1 (42e01f).
+// Everything else the browser offers is dropped, including the retransmission,
+// RED and FEC codecs that come with it.
+function preferH264(tx) {
+  if (!tx || typeof tx.setCodecPreferences !== 'function' ||
+      !window.RTCRtpReceiver || typeof RTCRtpReceiver.getCapabilities !== 'function') {
+    log('setCodecPreferences is unavailable — offering the default codec list');
+    return;
+  }
+  const caps = RTCRtpReceiver.getCapabilities('video');
+  const wanted = (caps && caps.codecs ? caps.codecs : []).filter((c) =>
+    /^video\/h264$/i.test(c.mimeType) &&
+    /packetization-mode=1/.test(c.sdpFmtpLine || '') &&
+    /profile-level-id=42e01f/i.test(c.sdpFmtpLine || ''));
+  if (!wanted.length) {
+    log('no H264 42e01f packetization-mode=1 in this browser — offering the default codec list');
+    return;
+  }
+  tx.setCodecPreferences(wanted);
+  log('video limited to H264: ' + wanted.map((c) => c.sdpFmtpLine).join(' | '));
 }
 
 function closePC() {
@@ -281,7 +359,7 @@ function logSDP(direction, kind, sdp) {
   console.log(lines.map((l, i) => String(i + 1).padStart(3, ' ') + '  ' + l).join('\n'));
   console.groupEnd();
 
-  log(direction + ' ' + kind + ': ' + lines.length + ' lines, ' +
+  log(direction + ' ' + kind + ': ' + sdp.length + ' bytes, ' + lines.length + ' lines, ' +
     (summary.media.length ? summary.media.length + ' m-section(s)' : 'no media') +
     ' — full SDP in the browser console');
 }
@@ -300,11 +378,21 @@ function iceServersFrom(msg) {
 }
 
 async function onReady(msg) {
+  readyMsg = msg;
   buildPC(iceServersFrom(msg));
   if (!msg.initiator) {
     setStatus('ready — waiting for the offer');
     return;
   }
+  await sendOffer();
+}
+
+// sendOffer builds the offer and puts it on the wire. Nothing is offered until
+// ready arrives, and ready means the relay has both sides of the session, so
+// an offer is never sent into an empty session.
+async function sendOffer() {
+  if (offerSent || !pc) return;
+  offerSent = true;
   wireChannel(pc.createDataChannel('m2m'));
   await pc.setLocalDescription(await pc.createOffer());
   await gatherComplete();
@@ -312,7 +400,57 @@ async function onReady(msg) {
   // gathered candidates written into it.
   logSDP('local', 'offer', pc.localDescription.sdp);
   send({ type: 'offer', sdp: pc.localDescription.sdp });
-  setStatus('ready — offer sent');
+  setStatus('offer sent to session ' + joinedSession);
+}
+
+// onRemoteJoined reacts to another client joining anywhere on the relay. It is
+// how this page learns a session id it was never told, such as one a device
+// generates for itself: the box is filled in, and an initiator that is still
+// waiting alone moves into that session, where ready then starts the call.
+//
+// Three cases deliberately do nothing but fill the box:
+//
+//   answerer      moving would take the device slot in the named session and
+//                 throw out the real device
+//   already ready a call is up or coming up, and following a stranger's join
+//                 would tear it down
+//   chased        every client sees every join, including a second page in
+//                 this same mode, so without this the two follow each other
+async function onRemoteJoined(msg) {
+  if (typeof msg.session !== 'string' || !msg.session) return;
+  $('session').value = msg.session;
+  const mine = msg.session.toLowerCase() === joinedSession.toLowerCase();
+
+  let hold = '';
+  if ($('role').value !== 'phone') hold = 'answerers do not follow it';
+  else if (mine) hold = 'it is the session we already joined';
+  else if (readyMsg) hold = 'this session already has both sides';
+  else if (chased) hold = 'an earlier one is already being acted on';
+
+  if (hold) {
+    log('remote_joined: session box set to ' + msg.session + ' — ' + hold +
+      (mine ? '' : ', Hang up and Connect to join it'));
+    return;
+  }
+
+  chased = true;
+  log('remote_joined: moving from session ' + joinedSession + ' to ' + msg.session);
+  rejoin(msg.session);
+}
+
+// rejoin drops the current socket and opens a new one on another session. The
+// relay keys a session by id and forwards nothing across ids, so joining the
+// named session is the only way to reach the peer that announced it.
+function rejoin(session) {
+  if (ws) {
+    ws.onclose = null; // this close is ours, not a lost connection
+    ws.close();
+    ws = null;
+  }
+  closePC();
+  readyMsg = null;
+  offerSent = false;
+  openSocket(session);
 }
 
 async function onOffer(msg) {
@@ -356,16 +494,7 @@ async function onMessage(raw) {
       }
       break;
     case 'remote_joined':
-      // The relay announces every join to every client, so this is how a tab
-      // learns a session id it was never told - a device that generates its own
-      // UUID, for example. The box is updated; connecting to it stays manual,
-      // because a page that re-pointed itself mid-call would be worse than
-      // useless.
-      if (typeof msg.session === 'string' && msg.session) {
-        $('session').value = msg.session;
-        log('remote_joined: session box set to ' + msg.session +
-          ' — Hang up and Connect to join it');
-      }
+      await onRemoteJoined(msg);
       break;
     case 'bye':
       setStatus('the other side left');
@@ -376,18 +505,19 @@ async function onMessage(raw) {
   }
 }
 
-$('connect').onclick = () => {
+function openSocket(session) {
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  joinedSession = session;
   ws = new WebSocket(`${scheme}://${location.host}/ws`);
   $('connect').disabled = true;
   $('hangup').disabled = false;
 
   ws.onopen = () => {
-    setStatus('socket open — joining');
+    setStatus('socket open — joining ' + session);
     send({
       type: 'join',
       role: $('role').value,
-      session: $('session').value.trim(),
+      session: session,
       imei: $('imei').value.trim(),
     });
   };
@@ -406,6 +536,13 @@ $('connect').onclick = () => {
     $('hangup').disabled = true;
   };
   ws.onerror = () => setStatus('socket error — see the browser console');
+}
+
+$('connect').onclick = () => {
+  readyMsg = null;
+  offerSent = false;
+  chased = false;
+  openSocket($('session').value.trim());
 };
 
 $('hangup').onclick = () => {
@@ -425,10 +562,12 @@ $('ping').onclick = () => {
 };
 
 if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-  navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then((stream) => {
+  // Camera only. This page never sends audio, so capturing the microphone would
+  // buy nothing and put the browser's recording indicator on for the whole call.
+  navigator.mediaDevices.getUserMedia({ video: true, audio: false }).then((stream) => {
     localStream = stream;
     $('localVideo').srcObject = stream;
-    log('local media added');
+    log('local camera added — audio is receive-only, the microphone is not used');
   }).catch((err) => {
     console.error('[ws-test] getUserMedia error:', err);
     log('getUserMedia error: ' + err + ' — the data channel test still works');
