@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -269,4 +272,55 @@ func TestSignalingShutdownClosesLiveSockets(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("Shutdown() did not return: a hijacked connection is still held")
 	}
+}
+
+func getPage(t *testing.T, base, path string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+path, nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode, string(body)
+}
+
+// The two test pages are deliberately separate documents: one drives /ws, the
+// other is copy/paste only. Sharing a page meant sharing one RTCPeerConnection
+// between the two modes, where each silently tore down the other's call.
+func TestUIPagesAreServedSeparately(t *testing.T) {
+	_, wsURL := startSignalingServer(t, nil)
+	base := "http:" + strings.TrimPrefix(strings.TrimSuffix(wsURL, "/ws"), "ws:")
+
+	status, manual := getPage(t, base, "/ui/manual")
+	assert.Equal(t, http.StatusOK, status)
+	assert.NotContains(t, manual, "new WebSocket", "the manual page must not drive /ws")
+	assert.Contains(t, manual, "Create offer")
+
+	status, auto := getPage(t, base, "/ui/websocket")
+	assert.Equal(t, http.StatusOK, status)
+	assert.Contains(t, auto, "new WebSocket")
+	assert.NotContains(t, auto, "Accept pasted description", "the websocket page must not carry the copy/paste flow")
+}
+
+// /ui/websocket only drives /ws, so serving it without /ws would hand the user
+// a page that cannot work.
+func TestWebsocketUIIsAbsentWhenSignalingIsDisabled(t *testing.T) {
+	srv, err := New(&HTTPServerConfig{ListenAddr: "127.0.0.1:0", Log: testLogger(t)})
+	require.NoError(t, err)
+
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", srv.cfg.ListenAddr)
+	require.NoError(t, err)
+	go func() { _ = srv.srv.Serve(ln) }()
+	t.Cleanup(func() { _ = ln.Close() })
+
+	base := "http://" + ln.Addr().String()
+	status, _ := getPage(t, base, "/ui/websocket")
+	assert.Equal(t, http.StatusNotFound, status)
+
+	status, _ = getPage(t, base, "/ui/manual")
+	assert.Equal(t, http.StatusOK, status, "the manual page does not depend on signaling")
 }

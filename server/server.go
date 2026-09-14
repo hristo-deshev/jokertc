@@ -22,6 +22,9 @@ import (
 //go:embed static/webrtc-test.html
 var webrtcTestHTML []byte
 
+//go:embed static/webrtc-websocket.html
+var webrtcWebsocketHTML []byte
+
 type HTTPServerConfig struct {
 	ListenAddr  string
 	MetricsAddr string
@@ -115,6 +118,14 @@ func (srv *Server) getRouter() http.Handler {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(webrtcTestHTML)
 	})
+
+	// Only useful when the signaling endpoint it drives is registered.
+	if srv.signaling != nil {
+		mux.Get("/ui/websocket", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(webrtcWebsocketHTML)
+		})
+	}
 
 	if srv.cfg.EnablePprof {
 		srv.log.Info("pprof API enabled")

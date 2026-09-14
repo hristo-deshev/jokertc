@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>jokertc WebRTC signaling test</title>
+<style>
+  body { font-family: sans-serif; margin: 1rem; max-width: 900px; }
+  video { width: 420px; background: #222; margin: 2px; }
+  textarea { width: 100%; height: 6rem; font-size: 0.75rem; }
+  fieldset { margin: 0.5rem 0; }
+  label { display: block; margin-top: 0.4rem; font-size: 0.85rem; }
+  input, select { font-size: 1rem; }
+  #status { margin-top: 0.5rem; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>WebRTC signaling test (/ws)</h1>
+<p>Open this page in two tabs. Put the same session id in both, pick
+<em>device</em> in one and <em>phone</em> in the other, then Connect in both.
+The relay pairs them and tells each side who offers: the phone offers, the
+device answers. STUN and TURN come from the relay's <code>ready</code> message,
+so a connected call also proves the credential it issues works.</p>
+<p>For the copy/paste version with no signaling server, see
+<a href="/ui/manual">/ui/manual</a>.</p>
+
+<video id="localVideo" autoplay muted playsinline></video>
+<video id="remoteVideo" autoplay playsinline></video>
+
+<fieldset>
+  <legend>Session</legend>
+  <label for="session">Session id (must match in both tabs)</label>
+  <input id="session" type="text" value="manual-1">
+  <label for="role">Role</label>
+  <select id="role">
+    <option value="phone">phone (initiator — creates the offer)</option>
+    <option value="device">device (answerer)</option>
+  </select>
+  <label for="imei">IMEI (optional, logged by the relay)</label>
+  <input id="imei" type="text">
+  <p>
+    <button id="connect">Connect</button>
+    <button id="hangup" disabled>Hang up</button>
+  </p>
+  <div id="status">not connected</div>
+</fieldset>
+
+<fieldset>
+  <legend>Data channel</legend>
+  <button id="ping" disabled>Ping</button>
+  <textarea id="messages" readonly placeholder="received messages appear here"></textarea>
+</fieldset>
+
+<fieldset>
+  <legend>Log</legend>
+  <textarea id="log" readonly></textarea>
+</fieldset>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function log(line) {
+  console.log('[ws-test] ' + line);
+  $('log').value += line + '\n';
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+function setStatus(text) {
+  $('status').textContent = text;
+  log(text);
+}
+
+let ws = null;
+let pc = null;
+let sendChannel = null;
+let localStream = null;
+let candCounts = {};
+
+function wireChannel(ch) {
+  sendChannel = ch;
+  ch.onopen = () => { $('ping').disabled = false; };
+  ch.onclose = () => { $('ping').disabled = true; };
+  ch.onmessage = (e) => { $('messages').value += 'received ' + e.data + '\n'; };
+}
+
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+  } else {
+    log('not sending ' + obj.type + ': socket is not open');
+  }
+}
+
+// buildPC builds the peer connection for one call, using only the ICE servers
+// the relay named in its ready message. Candidates are trickled as they are
+// gathered: the relay forwards them immediately and never waits for gathering
+// to finish.
+function buildPC(iceServers) {
+  closePC();
+  pc = new RTCPeerConnection({ iceServers });
+  candCounts = { host: 0, srflx: 0, relay: 0, prflx: 0, unknown: 0 };
+  $('messages').value = '';
+  $('remoteVideo').srcObject = null;
+
+  pc.onicecandidate = (e) => {
+    if (!e.candidate) { log('gathering done — candidates: ' + JSON.stringify(candCounts)); return; }
+    const c = e.candidate.candidate;
+    const typ = (c.match(/typ (host|srflx|relay|prflx)/) || [])[1] || 'unknown';
+    candCounts[typ] = (candCounts[typ] || 0) + 1;
+    log('local candidate: ' + c);
+    send({
+      type: 'candidate',
+      candidate: c,
+      sdpMid: e.candidate.sdpMid,
+      sdpMLineIndex: e.candidate.sdpMLineIndex,
+    });
+  };
+  pc.oniceconnectionstatechange = () => log('ICE state: ' + pc.iceConnectionState);
+  pc.onconnectionstatechange = () => setStatus('connection: ' + pc.connectionState);
+  pc.ontrack = (e) => { $('remoteVideo').srcObject = e.streams[0]; };
+  pc.ondatachannel = (e) => wireChannel(e.channel);
+
+  if (localStream) {
+    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+  }
+}
+
+function closePC() {
+  if (!pc) return;
+  try { pc.close(); } catch (err) { console.error('[ws-test] pc.close() failed:', err); }
+  pc = null;
+  sendChannel = null;
+  $('ping').disabled = true;
+}
+
+// iceServersFrom turns the relay's ready message into an RTCIceServer list.
+// Nothing is hardcoded here on purpose: if the relay advertises no servers the
+// call falls back to host candidates, which is itself worth seeing.
+function iceServersFrom(msg) {
+  const servers = [];
+  if (msg.stun) servers.push({ urls: msg.stun });
+  if (msg.turn && msg.turn.url) {
+    servers.push({ urls: msg.turn.url, username: msg.turn.user, credential: msg.turn.pass });
+  }
+  log('ice servers from ready: ' + JSON.stringify(servers.map((s) => s.urls)));
+  return servers;
+}
+
+async function onReady(msg) {
+  buildPC(iceServersFrom(msg));
+  if (!msg.initiator) {
+    setStatus('ready — waiting for the offer');
+    return;
+  }
+  wireChannel(pc.createDataChannel('m2m'));
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  send({ type: 'offer', sdp: offer.sdp });
+  setStatus('ready — offer sent');
+}
+
+async function onOffer(msg) {
+  if (!pc) {
+    log('offer arrived before ready — ignoring');
+    return;
+  }
+  await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+  await pc.setLocalDescription(await pc.createAnswer());
+  send({ type: 'answer', sdp: pc.localDescription.sdp });
+  setStatus('answer sent');
+}
+
+async function onMessage(raw) {
+  const msg = JSON.parse(raw);
+  switch (msg.type) {
+    case 'joined':
+      setStatus('joined (mode ' + msg.mode + ') — waiting for the other side');
+      break;
+    case 'ready':
+      await onReady(msg);
+      break;
+    case 'offer':
+      await onOffer(msg);
+      break;
+    case 'answer':
+      if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+      setStatus('answer applied');
+      break;
+    case 'candidate':
+      if (pc && msg.candidate) {
+        await pc.addIceCandidate({
+          candidate: msg.candidate,
+          sdpMid: msg.sdpMid ?? '0',
+          sdpMLineIndex: msg.sdpMLineIndex ?? 0,
+        });
+      }
+      break;
+    case 'bye':
+      setStatus('the other side left');
+      closePC();
+      break;
+    default:
+      log('ignored message type: ' + msg.type);
+  }
+}
+
+$('connect').onclick = () => {
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${scheme}://${location.host}/ws`);
+  $('connect').disabled = true;
+  $('hangup').disabled = false;
+
+  ws.onopen = () => {
+    setStatus('socket open — joining');
+    send({
+      type: 'join',
+      role: $('role').value,
+      session: $('session').value.trim(),
+      imei: $('imei').value.trim(),
+    });
+  };
+  ws.onmessage = (e) => {
+    onMessage(e.data).catch((err) => {
+      console.error('[ws-test] message handling failed:', err);
+      setStatus('error: ' + err);
+    });
+  };
+  ws.onclose = (e) => {
+    setStatus('socket closed' + (e.reason ? ': ' + e.reason : ''));
+    closePC();
+    ws = null;
+    $('connect').disabled = false;
+    $('hangup').disabled = true;
+  };
+  ws.onerror = () => setStatus('socket error — see the browser console');
+};
+
+$('hangup').onclick = () => {
+  send({ type: 'bye' });
+  if (ws) ws.close();
+};
+
+$('ping').onclick = () => {
+  const msg = 'ping ' + new Date().toISOString();
+  try {
+    sendChannel.send(msg);
+    $('messages').value += 'sent ' + msg + '\n';
+  } catch (err) {
+    console.error('[ws-test] data channel send failed:', err);
+    log('data channel send failed: ' + err);
+  }
+};
+
+if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+  navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then((stream) => {
+    localStream = stream;
+    $('localVideo').srcObject = stream;
+    log('local media added');
+  }).catch((err) => {
+    console.error('[ws-test] getUserMedia error:', err);
+    log('getUserMedia error: ' + err + ' — the data channel test still works');
+  });
+} else {
+  log('camera API unavailable on insecure origin (plain http + non-localhost).');
+  log('webcam needs: open http://localhost:8080/ui/websocket on this machine, or serve over HTTPS.');
+  log('signaling + TURN + data channel tests still work without a camera.');
+}
+
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('[ws-test] unhandled promise rejection:', e.reason);
+});
+window.addEventListener('error', (e) => {
+  console.error('[ws-test] global error:', e.message);
+});
+</script>
+</body>
+</html>
