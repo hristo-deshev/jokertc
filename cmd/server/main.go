@@ -15,6 +15,7 @@ import (
 
 	"jokertc/common"
 	"jokertc/server"
+	"jokertc/signaling"
 	"jokertc/turn"
 )
 
@@ -69,6 +70,31 @@ var flags []cli.Flag = []cli.Flag{
 		Value: "",
 		Usage: "external IP advertised in TURN relayed addresses; auto-detected when empty",
 	},
+	&cli.BoolFlag{
+		Name:  "signaling",
+		Value: true,
+		Usage: "enable the /ws WebRTC signaling endpoint",
+	},
+	&cli.StringFlag{
+		Name:  "signaling-stun-url",
+		Value: "",
+		Usage: "STUN URL advertised to signaling peers, e.g. stun:host:3478",
+	},
+	&cli.StringFlag{
+		Name:  "signaling-turn-url",
+		Value: "",
+		Usage: "TURN URL advertised to signaling peers, e.g. turn:host:3478; empty sends no credential",
+	},
+	&cli.Int64Flag{
+		Name:  "signaling-no-receiver-seconds",
+		Value: 20,
+		Usage: "seconds a device may wait alone before it is sent bye; 0 disables",
+	},
+	&cli.Int64Flag{
+		Name:  "signaling-ping-seconds",
+		Value: 30,
+		Usage: "keepalive ping interval on idle signaling sockets; 0 disables",
+	},
 	&cli.StringFlag{
 		Name:  "turn-relay-port-range",
 		Value: "50000-50100",
@@ -114,6 +140,11 @@ func main() {
 			turnListenAddr := cCtx.String("turn-listen-addr")
 			turnExternalIP := cCtx.String("turn-external-ip")
 			turnRelayRange := cCtx.String("turn-relay-port-range")
+			enableSignaling := cCtx.Bool("signaling")
+			signalingStunURL := cCtx.String("signaling-stun-url")
+			signalingTurnURL := cCtx.String("signaling-turn-url")
+			signalingNoReceiver := time.Duration(cCtx.Int64("signaling-no-receiver-seconds")) * time.Second
+			signalingPing := time.Duration(cCtx.Int64("signaling-ping-seconds")) * time.Second
 
 			uid := ""
 			if logUID {
@@ -138,6 +169,16 @@ func main() {
 				GracefulShutdownDuration: 30 * time.Second,
 				ReadTimeout:              60 * time.Second,
 				WriteTimeout:             30 * time.Second,
+			}
+
+			if enableSignaling {
+				cfg.Signaling = &signaling.Config{
+					StunURL:           signalingStunURL,
+					TurnURL:           signalingTurnURL,
+					NoReceiverTimeout: signalingNoReceiver,
+					PingInterval:      signalingPing,
+					Log:               log,
+				}
 			}
 
 			relayMin, relayMax, err := parsePortRange(turnRelayRange)

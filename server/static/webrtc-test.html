@@ -28,6 +28,24 @@ path. Each round builds a fresh connection, so repeat rounds are reliable.</p>
 </fieldset>
 
 <fieldset>
+  <legend>Signaling over /ws</legend>
+  <p>Open this page in two tabs, put the same session id in both, pick
+  <em>device</em> in one and <em>phone</em> in the other, then Connect in both.
+  The phone offers; the device answers. STUN and TURN come from the server's
+  ready message, so this also proves the credential it issues.</p>
+  <label>Session id</label>
+  <input id="wsSession" type="text" value="manual-1">
+  <label>Role</label>
+  <select id="wsRole">
+    <option value="phone">phone (initiator)</option>
+    <option value="device">device (answerer)</option>
+  </select>
+  <button id="wsConnect">Connect</button>
+  <button id="wsHangup" disabled>Hang up</button>
+  <div id="wsStatus">not connected</div>
+</fieldset>
+
+<fieldset>
   <legend>Signaling (copy / paste)</legend>
   <button id="createOffer">Create offer</button>
   <button id="accept">Accept pasted description</button>
@@ -44,7 +62,13 @@ path. Each round builds a fresh connection, so repeat rounds are reliable.</p>
 </fieldset>
 
 <script>
+// signalingIce holds the ICE servers the /ws ready message named. When it is
+// set it wins, so the signaling round uses the credential the server issued
+// rather than the static one typed into the form.
+let signalingIce = null;
+
 function iceServers() {
+  if (signalingIce) return signalingIce;
   // 0.0.0.0 is not routable as an ICE server target — normalize to loopback.
   const host = $('iceHost').value.trim() || '127.0.0.1';
   return [
@@ -199,6 +223,118 @@ $('ping').onclick = () => {
     console.error('[webrtc-test] data channel send failed:', err);
     logIce('data channel send failed: ' + err);
   }
+};
+
+let ws = null;
+
+function wsStatus(text) {
+  $('wsStatus').textContent = text;
+  logIce('[ws] ' + text);
+}
+
+function wsSend(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+// wsAttachTrickle forwards local candidates as they are gathered, which is what
+// the relay expects — it never waits for gathering to complete.
+function wsAttachTrickle() {
+  pc.onicecandidate = (e) => {
+    if (!e.candidate) { logIce('gathering done'); return; }
+    logIce(e.candidate.candidate);
+    wsSend({
+      type: 'candidate',
+      candidate: e.candidate.candidate,
+      sdpMid: e.candidate.sdpMid,
+      sdpMLineIndex: e.candidate.sdpMLineIndex,
+    });
+  };
+}
+
+async function wsOnReady(msg) {
+  const servers = [];
+  if (msg.stun) servers.push({ urls: msg.stun });
+  if (msg.turn && msg.turn.url) {
+    servers.push({ urls: msg.turn.url, username: msg.turn.user, credential: msg.turn.pass });
+  }
+  signalingIce = servers.length ? servers : null;
+  wsStatus('ready — ice servers: ' + JSON.stringify(servers.map((s) => s.urls)));
+
+  buildPC();
+  wsAttachTrickle();
+  if (!msg.initiator) return;
+
+  wireChannel(pc.createDataChannel('m2m'));
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  wsSend({ type: 'offer', sdp: offer.sdp });
+  wsStatus('offer sent');
+}
+
+async function wsOnMessage(raw) {
+  const msg = JSON.parse(raw);
+  switch (msg.type) {
+    case 'joined':
+      wsStatus('joined, mode ' + msg.mode + ' — waiting for the other side');
+      break;
+    case 'ready':
+      await wsOnReady(msg);
+      break;
+    case 'offer':
+      await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+      await pc.setLocalDescription(await pc.createAnswer());
+      wsSend({ type: 'answer', sdp: pc.localDescription.sdp });
+      wsStatus('answer sent');
+      break;
+    case 'answer':
+      await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+      wsStatus('answer applied');
+      break;
+    case 'candidate':
+      if (msg.candidate) {
+        await pc.addIceCandidate({
+          candidate: msg.candidate,
+          sdpMid: msg.sdpMid ?? '0',
+          sdpMLineIndex: msg.sdpMLineIndex ?? 0,
+        });
+      }
+      break;
+    case 'bye':
+      wsStatus('the other side left');
+      break;
+    default:
+      logIce('[ws] ignored ' + msg.type);
+  }
+}
+
+$('wsConnect').onclick = () => {
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${scheme}://${location.host}/ws`);
+  $('wsConnect').disabled = true;
+  $('wsHangup').disabled = false;
+
+  ws.onopen = () => {
+    wsStatus('connected, joining');
+    wsSend({ type: 'join', role: $('wsRole').value, session: $('wsSession').value.trim() });
+  };
+  ws.onmessage = (e) => {
+    wsOnMessage(e.data).catch((err) => {
+      console.error('[webrtc-test] ws message error:', err);
+      wsStatus('error: ' + err);
+    });
+  };
+  ws.onclose = () => {
+    wsStatus('socket closed');
+    $('wsConnect').disabled = false;
+    $('wsHangup').disabled = true;
+  };
+  ws.onerror = () => wsStatus('socket error');
+};
+
+$('wsHangup').onclick = () => {
+  wsSend({ type: 'bye' });
+  if (ws) ws.close();
+  signalingIce = null;
 };
 
 buildPC();

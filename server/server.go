@@ -15,6 +15,7 @@ import (
 	"jokertc/api"
 	"jokertc/healthcheck"
 	"jokertc/metrics"
+	"jokertc/signaling"
 	"jokertc/turn"
 )
 
@@ -32,7 +33,8 @@ type HTTPServerConfig struct {
 	ReadTimeout              time.Duration
 	WriteTimeout             time.Duration
 
-	TURN *turn.Config // nil disables the embedded STUN/TURN server
+	TURN      *turn.Config      // nil disables the embedded STUN/TURN server
+	Signaling *signaling.Config // nil disables the /ws signaling endpoint
 }
 
 type Server struct {
@@ -43,6 +45,7 @@ type Server struct {
 	srv        *http.Server
 	metricsSrv *http.Server
 	turnSrv    *turn.Server
+	signaling  *signaling.Hub
 
 	errCh      chan error
 	wg         sync.WaitGroup
@@ -74,6 +77,17 @@ func New(cfg *HTTPServerConfig) (srv *Server, err error) {
 		srv.turnSrv = turnSrv
 	}
 
+	if cfg.Signaling != nil {
+		if cfg.Signaling.Log == nil {
+			cfg.Signaling.Log = cfg.Log
+		}
+		hub, err := signaling.New(cfg.Signaling)
+		if err != nil {
+			return nil, fmt.Errorf("signaling server: %w", err)
+		}
+		srv.signaling = hub
+	}
+
 	srv.srv = &http.Server{
 		Addr:         cfg.ListenAddr,
 		Handler:      srv.getRouter(),
@@ -93,6 +107,9 @@ func (srv *Server) getRouter() http.Handler {
 
 	api.RegisterRoutes(mux)
 	srv.healthcheck.RegisterRoutes(mux)
+	if srv.signaling != nil {
+		srv.signaling.RegisterRoutes(mux)
+	}
 
 	mux.Get("/ui/manual", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -149,6 +166,12 @@ func (srv *Server) RunInBackground() {
 func (srv *Server) ErrCh() <-chan error { return srv.errCh }
 
 func (srv *Server) Shutdown() {
+	// signaling: http.Server.Shutdown neither waits for nor closes hijacked
+	// connections, so live WebSockets must be ended here first.
+	if srv.signaling != nil {
+		srv.signaling.Close()
+	}
+
 	// api
 	ctx, cancel := context.WithTimeout(context.Background(), srv.cfg.GracefulShutdownDuration)
 	defer cancel()
