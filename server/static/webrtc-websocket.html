@@ -56,6 +56,18 @@ phone.</p>
   device: it does not implement trickle ICE, so it needs every candidate inside
   the offer or answer. Turn it off only when both sides are browsers, where
   trickling connects sooner.</p>
+  <label for="relayOnly">
+    <input id="relayOnly" type="checkbox">
+    TURN relay only — refuse any direct path
+  </label>
+  <p style="font-size: 0.8rem; margin: 0.2rem 0 0 0;">Sets
+  <code>iceTransportPolicy: 'relay'</code>, so this page gathers nothing but a
+  TURN allocation, and drops every incoming candidate that is not
+  <code>typ relay</code>, including the ones embedded in the remote SDP. Both
+  ends then have to meet at the TURN server. Turning off STUN on the server does
+  not do this: two peers on one LAN pair their host candidates and never ask a
+  server anything. If the call fails with this on, the relay path is genuinely
+  broken.</p>
   <label for="compactSdp">
     <input id="compactSdp" type="checkbox" checked>
     Compact media: video receive-only, H264 only
@@ -190,7 +202,15 @@ function send(obj) {
 // to finish.
 function buildPC(iceServers) {
   closePC();
-  pc = new RTCPeerConnection({ iceServers });
+  const policy = relayOnly() ? 'relay' : 'all';
+  if (relayOnly()) {
+    const turn = iceServers.filter((s) => String(s.urls).startsWith('turn'));
+    if (!turn.length) {
+      log('relay only is on but the relay advertised no TURN server — ICE will find nothing');
+    }
+  }
+  pc = new RTCPeerConnection({ iceServers, iceTransportPolicy: policy });
+  log('peer connection built with iceTransportPolicy: ' + policy);
   candCounts = { host: 0, srflx: 0, relay: 0, prflx: 0, unknown: 0 };
   selectedPairId = null;
   $('messages').value = '';
@@ -246,6 +266,38 @@ function buildPC(iceServers) {
 
 function compactSDP() {
   return $('compactSdp').checked;
+}
+
+function relayOnly() {
+  return $('relayOnly').checked;
+}
+
+function isRelayCandidate(line) {
+  return / typ relay(\s|$)/.test(line);
+}
+
+// stripNonRelay removes every candidate from a remote description that is not a
+// relay candidate.
+//
+// iceTransportPolicy only governs what this end gathers. The other end still
+// offers its host address, and a local relay candidate pairs with it happily,
+// which puts half the path back on the LAN. Removing them leaves the relay as
+// the only thing to pair with.
+//
+// A peer that does not trickle puts its candidates inside the SDP, so filtering
+// the description is the only place that catches those.
+function stripNonRelay(sdp) {
+  const kept = [];
+  let dropped = 0;
+  for (const line of sdp.split(/\r?\n/)) {
+    if (line.startsWith('a=candidate:') && !isRelayCandidate(line)) {
+      dropped++;
+      continue;
+    }
+    kept.push(line);
+  }
+  if (dropped) log('relay only: dropped ' + dropped + ' non-relay candidate line(s) from the remote SDP');
+  return kept.join('\r\n');
 }
 
 // selectedPair returns the candidate pair the connection is actually using, or
@@ -561,7 +613,7 @@ async function onOffer(msg) {
     return;
   }
   logSDP('remote', 'offer', msg.sdp);
-  await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+  await pc.setRemoteDescription({ type: 'offer', sdp: relayOnly() ? stripNonRelay(msg.sdp) : msg.sdp });
   await pc.setLocalDescription(await pc.createAnswer());
   await gatherComplete();
   logSDP('local', 'answer', pc.localDescription.sdp);
@@ -583,10 +635,19 @@ async function onMessage(raw) {
       break;
     case 'answer':
       logSDP('remote', 'answer', msg.sdp);
-      if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+      if (pc) {
+        await pc.setRemoteDescription({
+          type: 'answer',
+          sdp: relayOnly() ? stripNonRelay(msg.sdp) : msg.sdp,
+        });
+      }
       setStatus('answer applied');
       break;
     case 'candidate':
+      if (relayOnly() && msg.candidate && !isRelayCandidate(msg.candidate)) {
+        log('relay only: ignored remote candidate ' + msg.candidate);
+        break;
+      }
       if (pc && msg.candidate) {
         await pc.addIceCandidate({
           candidate: msg.candidate,
