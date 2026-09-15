@@ -98,8 +98,13 @@ func New(cfg *Config) (*Server, error) {
 		}
 		s.udpConn = udpConn
 		served := net.PacketConn(udpConn)
+		if cfg.Log != nil {
+			served = newSTUNLogConn(served, cfg.Log)
+		}
+		// Outside the logger on purpose: a dropped request is still reported as
+		// an attempt, and only the filter says it went no further.
 		if cfg.DisableSTUN {
-			served = &stunFilterConn{PacketConn: udpConn, log: cfg.Log}
+			served = &stunFilterConn{PacketConn: served, log: cfg.Log}
 			if cfg.Log != nil {
 				cfg.Log.Warn("STUN binding requests are disabled on the TURN UDP listener")
 			}
