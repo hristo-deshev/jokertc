@@ -87,6 +87,7 @@ func New(cfg *Config) (*Server, error) {
 			key, ok := cfg.Auth.Authenticate(ra.Username, ra.Realm, ra.SrcAddr)
 			return ra.Username, key, ok
 		},
+		EventHandler: newEventHandler(cfg.Log),
 	}
 
 	if cfg.ListenUDPAddr != "" {
