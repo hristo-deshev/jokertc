@@ -20,6 +20,10 @@ const (
 	stunHeaderLen           = 20
 	attrXORMappedAddress    = 0x0020
 	attrMappedAddress       = 0x0001
+	attrUsername            = 0x0006
+	attrMessageIntegrity    = 0x0008
+	attrRealm               = 0x0014
+	messageIntegritySize    = 20
 	addressFamilyIPv4       = 0x01
 	addressFamilyIPv6       = 0x02
 	transactionIDOffsetHigh = 20
@@ -59,31 +63,40 @@ func isBindingResponse(b []byte) (response, success bool) {
 // the transaction id as well (RFC 5389 section 15.2). MAPPED-ADDRESS is the
 // unmasked form kept for older clients.
 func mappedAddress(b []byte) string {
-	if len(b) < stunHeaderLen {
-		return ""
-	}
-	body := b[stunHeaderLen:]
-	if n := int(binary.BigEndian.Uint16(b[2:4])); n <= len(body) {
-		body = body[:n]
-	}
-
-	for len(body) >= 4 {
-		attrType := binary.BigEndian.Uint16(body[0:2])
-		attrLen := int(binary.BigEndian.Uint16(body[2:4]))
-		if 4+attrLen > len(body) {
-			return ""
-		}
-		value := body[4 : 4+attrLen]
-
+	addr := ""
+	forEachAttribute(b, func(attrType uint16, _ int, value []byte) bool {
 		switch attrType {
 		case attrXORMappedAddress:
-			if addr := decodeAddress(value, b, true); addr != "" {
-				return addr
-			}
+			addr = decodeAddress(value, b, true)
 		case attrMappedAddress:
-			if addr := decodeAddress(value, b, false); addr != "" {
-				return addr
-			}
+			addr = decodeAddress(value, b, false)
+		}
+		return addr == "" // stop at the first address that decodes
+	})
+	return addr
+}
+
+// forEachAttribute walks the attributes of a STUN message, calling fn with the
+// attribute type, the offset of its header inside msg, and its value. It stops
+// when fn returns false or the message runs out, and it stops silently on a
+// malformed message: the port is unauthenticated, so anything can arrive.
+func forEachAttribute(msg []byte, fn func(attrType uint16, offset int, value []byte) bool) {
+	if len(msg) < stunHeaderLen {
+		return
+	}
+	end := len(msg)
+	if n := stunHeaderLen + int(binary.BigEndian.Uint16(msg[2:4])); n <= end {
+		end = n
+	}
+
+	for offset := stunHeaderLen; offset+4 <= end; {
+		attrType := binary.BigEndian.Uint16(msg[offset : offset+2])
+		attrLen := int(binary.BigEndian.Uint16(msg[offset+2 : offset+4]))
+		if offset+4+attrLen > end {
+			return
+		}
+		if !fn(attrType, offset, msg[offset+4:offset+4+attrLen]) {
+			return
 		}
 
 		// Attributes are padded to a multiple of four bytes.
@@ -91,12 +104,8 @@ func mappedAddress(b []byte) string {
 		if pad := attrLen % 4; pad != 0 {
 			advance += 4 - pad
 		}
-		if advance > len(body) {
-			return ""
-		}
-		body = body[advance:]
+		offset += advance
 	}
-	return ""
 }
 
 func decodeAddress(value, msg []byte, xor bool) string {

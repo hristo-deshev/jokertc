@@ -100,6 +100,11 @@ var flags []cli.Flag = []cli.Flag{
 		Value: false,
 		Usage: "drop STUN binding requests so peers can only use a TURN relay (testing)",
 	},
+	&cli.BoolFlag{
+		Name:  "turn-allow-any-credential",
+		Value: false,
+		Usage: "accept any TURN username/password combination, making an open relay (testing)",
+	},
 	&cli.StringFlag{
 		Name:  "turn-relay-port-range",
 		Value: "49152-49352",
@@ -146,6 +151,7 @@ func main() {
 			turnExternalIP := cCtx.String("turn-external-ip")
 			turnRelayRange := cCtx.String("turn-relay-port-range")
 			turnDisableSTUN := cCtx.Bool("turn-disable-stun")
+			turnAllowAnyCredential := cCtx.Bool("turn-allow-any-credential")
 			enableSignaling := cCtx.Bool("signaling")
 			signalingStunURL := cCtx.String("signaling-stun-url")
 			signalingTurnURL := cCtx.String("signaling-turn-url")
@@ -193,13 +199,14 @@ func main() {
 			}
 			if turnListenAddr != "" {
 				turnCfg := &turn.Config{
-					ListenUDPAddr: turnListenAddr,
-					ListenTCPAddr: turnListenAddr,
-					RelayPortMin:  relayMin,
-					RelayPortMax:  relayMax,
-					Auth:          turn.AllowAllAuth{},
-					Log:           log,
-					DisableSTUN:   turnDisableSTUN,
+					ListenUDPAddr:      turnListenAddr,
+					ListenTCPAddr:      turnListenAddr,
+					RelayPortMin:       relayMin,
+					RelayPortMax:       relayMax,
+					Auth:               turn.AllowAllAuth{},
+					Log:                log,
+					DisableSTUN:        turnDisableSTUN,
+					AllowAnyCredential: turnAllowAnyCredential,
 				}
 				if turnExternalIP != "" {
 					turnCfg.ExternalIP = turnExternalIP

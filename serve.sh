@@ -14,6 +14,7 @@
 #   TURN_EXTERNAL_IP=203.0.113.7 ./serve.sh
 #   LISTEN_ADDR=0.0.0.0:9090 ./serve.sh
 #   DISABLE_STUN=1 ./serve.sh            # relay-only, for testing the TURN path
+#   ALLOW_ANY_CREDENTIAL=1 ./serve.sh    # accept any TURN user/password (open relay)
 
 set -euo pipefail
 
@@ -54,6 +55,13 @@ if [ -n "${DISABLE_STUN:-}" ]; then
 	STUN_FLAGS=(--turn-disable-stun)
 else
 	STUN_URL="${STUN_URL:-stun:${PUBLIC_HOST}:${TURN_PORT}}"
+fi
+
+# ALLOW_ANY_CREDENTIAL=1 makes the relay accept any username/password pair, for
+# testing against a client whose credentials you do not control. It is already
+# an open relay under AllowAllAuth; this removes the last constraint.
+if [ -n "${ALLOW_ANY_CREDENTIAL:-}" ]; then
+	STUN_FLAGS+=(--turn-allow-any-credential)
 fi
 
 BIN="${BIN:-./build/server}"

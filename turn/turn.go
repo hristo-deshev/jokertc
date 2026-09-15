@@ -31,6 +31,13 @@ type Config struct {
 	// fall back to a relay allocation. It is a test lever for the TURN-only
 	// path, not something to run in production.
 	DisableSTUN bool
+
+	// AllowAnyCredential makes the relay accept any username with any password,
+	// however they pair, by rewriting MESSAGE-INTEGRITY on each request before
+	// pion checks it. It turns the relay into a fully open one and exists for
+	// interop testing against a client whose credentials you do not control.
+	// Off by default; never enable it on a reachable network.
+	AllowAnyCredential bool
 }
 
 type Server struct {
@@ -107,6 +114,15 @@ func New(cfg *Config) (*Server, error) {
 			served = &stunFilterConn{PacketConn: served, log: cfg.Log}
 			if cfg.Log != nil {
 				cfg.Log.Warn("STUN binding requests are disabled on the TURN UDP listener")
+			}
+		}
+		// Outermost, so it rewrites the request as pion is about to read it.
+		// It only touches a TURN request that carries a credential, so it never
+		// collides with the STUN layers below.
+		if cfg.AllowAnyCredential {
+			served = newAnyCredentialConn(served, realm, cfg.Log)
+			if cfg.Log != nil {
+				cfg.Log.Warn("TURN accepts ANY username/password — this is an open relay")
 			}
 		}
 		serverConfig.PacketConnConfigs = append(serverConfig.PacketConnConfigs, pion.PacketConnConfig{
