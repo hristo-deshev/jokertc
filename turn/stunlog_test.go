@@ -119,16 +119,7 @@ func TestSTUNBindingIsLogged(t *testing.T) {
 		t.Fatalf("SendBindingRequest(): %v", err)
 	}
 
-	logged := out.String()
-	for _, want := range []string{
-		"STUN binding request",
-		"STUN binding success",
-		mapped.String(),
-	} {
-		if !strings.Contains(logged, want) {
-			t.Fatalf("log does not mention %q\n--- log ---\n%s", want, logged)
-		}
-	}
+	waitForLog(t, out, "STUN binding request", "STUN binding success", mapped.String())
 }
 
 // A repeat from the same address must not be logged at info again: an agent

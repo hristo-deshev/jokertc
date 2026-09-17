@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-chi/httplog/v2"
 )
@@ -29,6 +30,32 @@ func (b *safeBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// waitForLog polls out until every wanted string is present. The lines are
+// written by the goroutine that serves the request, after the reply is already
+// on the wire, so they can land after the client call that triggered them has
+// returned. Reading the buffer once races that write.
+func waitForLog(t *testing.T, out *safeBuffer, want ...string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		logged := out.String()
+		missing := ""
+		for _, w := range want {
+			if !strings.Contains(logged, w) {
+				missing = w
+				break
+			}
+		}
+		if missing == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("log does not mention %q after 5s\n--- log ---\n%s", missing, logged)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func capturingLogger(w *safeBuffer) *httplog.Logger {
@@ -72,16 +99,7 @@ func TestRelaySessionIsLogged(t *testing.T) {
 		t.Fatal("allocation returned no relayed address")
 	}
 
-	logged := out.String()
-	for _, want := range []string{
-		"TURN allocation created",
-		"TURN forwarding started",
-		relayAddr.String(),
-	} {
-		if !strings.Contains(logged, want) {
-			t.Fatalf("log does not mention %q\n--- log ---\n%s", want, logged)
-		}
-	}
+	waitForLog(t, out, "TURN allocation created", "TURN forwarding started", relayAddr.String())
 }
 
 // A nil Config.Log is allowed, and installing no callbacks must not stop the
