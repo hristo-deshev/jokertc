@@ -258,8 +258,12 @@ function buildPC(iceServers) {
     // the only thing this page sends, so the microphone is never captured and
     // there is no audio track to add here.
     pc.addTransceiver('audio', { direction: 'recvonly' });
-    if (localStream) {
-      localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+    const videoTracks = localStream ? localStream.getVideoTracks() : [];
+    if (videoTracks.length) {
+      videoTracks.forEach((track) => pc.addTrack(track, localStream));
+    } else {
+      pc.addTransceiver('video', { direction: 'recvonly' });
+      log('no local camera — the video section is offered as receive-only');
     }
   }
 }
