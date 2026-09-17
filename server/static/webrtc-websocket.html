@@ -78,6 +78,22 @@ phone.</p>
   video section to one H264 payload type. It also stops the browser sending
   video, so in a two-tab test only the initiator sees a picture. Audio is
   receive-only in both modes and the microphone is never captured.</p>
+  <label for="jitterTarget">Playout buffer in milliseconds (empty = browser
+  default)</label>
+  <input id="jitterTarget" type="number" min="0" max="4000" step="50"
+         placeholder="browser default" style="width: 8rem;">
+  <p style="font-size: 0.8rem; margin: 0.2rem 0 0 0;">Sets
+  <code>jitterBufferTarget</code> on each receiver, and
+  <code>playoutDelayHint</code> on the browsers that have the older property
+  instead. The value is how much video the receiver holds back before it draws
+  it. A deeper buffer absorbs packets that arrive late or out of order, and you
+  pay for it in latency, one millisecond for one millisecond. Try 200 if the
+  picture stutters. It takes effect on the next track, and on the current call
+  as soon as you leave the box, so you can change it while the call runs. It
+  does not help against freezes caused by lost packets or by a long wait for the
+  next keyframe — those need a fix on the sending side. Both properties are
+  Chromium features; on a browser that has neither, the log says so and the
+  default buffer stays.</p>
   <p>
     <button id="connect">Connect</button>
     <button id="hangup" disabled>Hang up</button>
@@ -248,7 +264,16 @@ function buildPC(iceServers) {
       logAllPairs();
     }
   };
-  pc.ontrack = (e) => { $('remoteVideo').srcObject = e.streams[0]; };
+  pc.ontrack = (e) => {
+    $('remoteVideo').srcObject = e.streams[0];
+    const applied = applyPlayoutDelay(e.receiver);
+    if (applied) {
+      log('playout buffer on the ' + e.track.kind + ' receiver: ' + applied);
+    } else if (jitterBufferMs() !== null) {
+      log('this browser has neither jitterBufferTarget nor playoutDelayHint — ' +
+        'the default buffer stays in use');
+    }
+  };
   pc.ondatachannel = (e) => wireChannel(e.channel);
 
   if (compactSDP()) {
@@ -270,6 +295,37 @@ function buildPC(iceServers) {
 
 function compactSDP() {
   return $('compactSdp').checked;
+}
+
+function jitterBufferMs() {
+  const raw = $('jitterTarget').value.trim();
+  if (raw === '') return null;
+  const ms = Number(raw);
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  return ms;
+}
+
+function applyPlayoutDelay(receiver) {
+  if (!receiver) return '';
+  const ms = jitterBufferMs();
+  const applied = [];
+  if ('jitterBufferTarget' in receiver) {
+    try {
+      receiver.jitterBufferTarget = ms;
+      applied.push('jitterBufferTarget=' + (ms === null ? 'default' : ms + 'ms'));
+    } catch (err) {
+      log('jitterBufferTarget was rejected: ' + err);
+    }
+  }
+  if ('playoutDelayHint' in receiver) {
+    try {
+      receiver.playoutDelayHint = ms === null ? null : ms / 1000;
+      applied.push('playoutDelayHint=' + (ms === null ? 'default' : ms / 1000 + 's'));
+    } catch (err) {
+      log('playoutDelayHint was rejected: ' + err);
+    }
+  }
+  return applied.join(', ');
 }
 
 function relayOnly() {
@@ -710,6 +766,17 @@ $('connect').onclick = () => {
   offerSent = false;
   chased = false;
   openSocket($('session').value.trim());
+};
+
+$('jitterTarget').onchange = () => {
+  if (!pc) return;
+  const applied = pc.getReceivers().map(applyPlayoutDelay).filter(Boolean);
+  if (applied.length) {
+    log('playout buffer changed on ' + applied.length + ' receiver(s): ' + applied[0]);
+  } else {
+    log('this browser has neither jitterBufferTarget nor playoutDelayHint — ' +
+      'the default buffer stays in use');
+  }
 };
 
 $('hangup').onclick = () => {
